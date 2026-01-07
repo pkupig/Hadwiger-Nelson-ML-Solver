@@ -7,7 +7,7 @@ class LayeredTreeGenerator:
     """分层点生成器（树状展开）
 
     生成规则：
-    - 第一层：随机生成一个初始点（均匀在 [-1,1]^dim）
+    - 第一层：初始点固定为坐标原点（0 向量）
     - 每一层对上一层的每个点，分别在该点的单位球上采样两个子点（child = parent + unit_vector）
     - 对于长度>=3 的链 x1->x2->x3 要求 dot(x3-x1, x2-x1) >= 0（cos >= 0），保证子树向外展开
     - 在每次生成新一层后，计算当前所有点之间的两两距离，若 |dist - 1| <= tol 则记为一条需要连线的点对
@@ -40,9 +40,9 @@ class LayeredTreeGenerator:
         """生成 k 层（包含第一层），返回点集与点对关系。
 
         Args:
-            k: 层数（>=1），第一层只有一个点
+            k: 层数（>=1），第一层只有一个点（原点）
             max_pair_num: 返回的最大点对数量（多则截断）
-            init_point: 可选的初始点，形状 (dim,) 或 (1,dim)
+            init_point: （已忽略）初始点固定为原点
             max_attempts: 为满足角度约束重采样的最大尝试次数
 
         Returns:
@@ -54,12 +54,8 @@ class LayeredTreeGenerator:
         points: List[torch.Tensor] = []
         layers: List[List[int]] = []  # 每层点在 points 列表中的索引
 
-        # 第一层：初始化点
-        if init_point is None:
-            p0 = (torch.rand(1, self.dim, device=self.device) * 2.0 - 1.0).float()
-        else:
-            p0 = init_point.clone().detach().view(1, self.dim).to(self.device).float()
-
+        # 第一层：初始化点（固定为原点）
+        p0 = torch.zeros(1, self.dim, device=self.device, dtype=torch.float32)
         points.append(p0[0])
         layers.append([0])
 
@@ -70,23 +66,6 @@ class LayeredTreeGenerator:
 
             for idx in prev_indices:
                 parent = points[idx]
-                grandparent = None
-                # 如果存在上一层（即不是第二层），则找到父的父（用于角度约束）
-                if len(layers) >= 2:
-                    # 在上一层中查找 parent 的位置（它必然存在于上一层）
-                    # 获取上一层索引列表
-                    prev_layer = layers[-2]
-                    # 找不到则 grandparent=None
-                    # 我们能通过索引关系来获知 parent 是否由某个点生成，但这里假定按层生成顺序
-                    # 若 parent 来自上一层的第 i 个元素，则 grandparent 在 layers[-3] 中对应索引不可直接获得
-                    # 简化：当层>=3 时我们将 grandparent 设为上一上一层中与 parent 最接近的点
-                    if layer_idx >= 3:
-                        # 寻找上一上一层中与 parent 最接近的点作为 grandparent
-                        candidates = [points[i] for i in layers[-2]]
-                        cand_stack = torch.stack(candidates, dim=0)
-                        dists = torch.norm(cand_stack - parent.unsqueeze(0), dim=1)
-                        min_idx = torch.argmin(dists).item()
-                        grandparent = candidates[min_idx]
 
                 # 为该 parent 生成两个 child
                 children_needed = 2
@@ -101,13 +80,11 @@ class LayeredTreeGenerator:
                     v = self._sample_unit_vector(1)[0]
                     child = parent + v
 
-                    # 如果有 grandparent，应用角度约束 dot(child - grandparent, parent - grandparent) >= 0
+                    # 相对于原点的角度约束：dot(child - x0, parent - x0) >= 0
+                    # 由于 x0 为原点，条件简化为 dot(child, parent) >= 0
                     ok = True
-                    if grandparent is not None:
-                        vec1 = child - grandparent
-                        vec2 = parent - grandparent
-                        if (vec1 @ vec2) < 0:
-                            ok = False
+                    if (child @ parent) < 0:
+                        ok = False
 
                     if ok:
                         points.append(child)
