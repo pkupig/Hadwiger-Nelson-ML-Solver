@@ -1,0 +1,86 @@
+# Hadwiger-Nelson Problem ML Solver Configuration
+
+# Global settings
+project:
+  name: "hadwiger_nelson_chromatic_number"
+  seed: 42
+  device: "cuda"
+  log_dir: "./logs"
+  output_dir: "./results"
+
+# Data generation
+data:
+  dimensions: [2, 3, 4]  # Dimensions to test
+  batch_size: 4096
+  num_train_pairs: 1000000
+  num_val_pairs: 100000
+  space_range: [-5.0, 5.0]  # Range for sampling points
+  sampling_strategy: "uniform"
+  
+  # Hard example mining
+  hard_examples:
+    enabled: true
+    mining_iterations: 10
+    top_k_percentile: 5  # Take top 5% hardest examples
+    memory_size: 50000
+
+# Model architecture
+model:
+  name: "MLPColorMapper"
+  hidden_layers: [128, 256, 128]
+  activation: "relu"
+  use_batch_norm: true
+  dropout_rate: 0.1
+  
+  # Fourier features for better high-frequency representation
+  fourier_features:
+    enabled: true
+    num_features: 256
+    sigma: 10.0
+
+# Training
+training:
+  epochs: 5000
+  learning_rate: 0.001
+  weight_decay: 1e-5
+  gradient_clip: 1.0
+  
+  # Loss weights
+  loss_weights:
+    conflict: 1.0
+    entropy: 0.1
+    uniformity: 0.01
+    spectral: 0.05
+    
+  # Scheduler
+  scheduler:
+    type: "cosine_annealing"
+    T_0: 100
+    T_mult: 2
+    eta_min: 1e-6
+
+# Evaluation
+evaluation:
+  validation_freq: 100
+  save_checkpoint_freq: 500
+  num_test_samples: 100000
+  
+  # Grid resolution for visualization
+  grid_resolution:
+    2d: 300
+    3d: 50  # Lower for 3D due to memory
+    4d: 20  # Even lower for 4D
+
+# Experiments
+experiments:
+  2d:
+    colors_to_test: [3, 4, 5, 6, 7, 8]
+    reference_chromatic: 7
+    
+  3d:
+    colors_to_test: [4, 5, 6, 7, 8, 9, 10]
+    reference_chromatic: null  # Unknown
+    
+  4d:
+    colors_to_test: [5, 6, 7, 8, 9, 10, 11, 12]
+    reference_chromatic: null

@@ -1,0 +1,54 @@
+Collecting torch-geometric
+  Downloading torch_geometric-2.6.1-py3-none-any.whl.metadata (63 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 63.1/63.1 kB 537.0 kB/s eta 0:00:00
+Collecting aiohttp (from torch-geometric)
+  Downloading aiohttp-3.10.11-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (7.7 kB)
+Requirement already satisfied: fsspec in /home/aimi/miniconda3/envs/surfel_splatting/lib/python3.8/site-packages (from torch-geometric) (2024.6.1)
+Requirement already satisfied: jinja2 in /home/aimi/miniconda3/envs/surfel_splatting/lib/python3.8/site-packages (from torch-geometric) (3.1.4)
+Requirement already satisfied: numpy in /home/aimi/miniconda3/envs/surfel_splatting/lib/python3.8/site-packages (from torch-geometric) (1.24.4)
+Collecting psutil>=5.8.0 (from torch-geometric)
+  Downloading psutil-7.2.0-cp36-abi3-manylinux2010_x86_64.manylinux_2_12_x86_64.manylinux_2_28_x86_64.whl.metadata (22 kB)
+Requirement already satisfied: pyparsing in /home/aimi/miniconda3/envs/surfel_splatting/lib/python3.8/site-packages (from torch-geometric) (3.1.4)
+Requirement already satisfied: requests in /home/aimi/miniconda3/envs/surfel_splatting/lib/python3.8/site-packages (from torch-geometric) (2.32.3)
+Requirement already satisfied: tqdm in /home/aimi/miniconda3/envs/surfel_splatting/lib/python3.8/site-packages (from torch-geometric) (4.66.2)
+Collecting aiohappyeyeballs>=2.3.0 (from aiohttp->torch-geometric)
+  Downloading aiohappyeyeballs-2.4.4-py3-none-any.whl.metadata (6.1 kB)
+Collecting aiosignal>=1.1.2 (from aiohttp->torch-geometric)
+  Downloading aiosignal-1.3.1-py3-none-any.whl.metadata (4.0 kB)
+Requirement already satisfied: attrs>=17.3.0 in /home/aimi/miniconda3/envs/surfel_splatting/lib/python3.8/site-packages (from aiohttp->torch-geometric) (25.3.0)
+Collecting frozenlist>=1.1.1 (from aiohttp->torch-geometric)
+  Downloading frozenlist-1.5.0-cp38-cp38-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (13 kB)
+Collecting multidict<7.0,>=4.5 (from aiohttp->torch-geometric)
+  Downloading multidict-6.1.0-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (5.0 kB)
+Collecting yarl<2.0,>=1.12.0 (from aiohttp->torch-geometric)
+  Downloading yarl-1.15.2-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (56 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 56.2/56.2 kB 1.9 MB/s eta 0:00:00
+Collecting async-timeout<6.0,>=4.0 (from aiohttp->torch-geometric)
+  Downloading async_timeout-5.0.1-py3-none-any.whl.metadata (5.1 kB)
+Requirement already satisfied: MarkupSafe>=2.0 in /home/aimi/miniconda3/envs/surfel_splatting/lib/python3.8/site-packages (from jinja2->torch-geometric) (2.1.5)
+Requirement already satisfied: charset-normalizer<4,>=2 in /home/aimi/miniconda3/envs/surfel_splatting/lib/python3.8/site-packages (from requests->torch-geometric) (3.4.0)
+Requirement already satisfied: idna<4,>=2.5 in /home/aimi/miniconda3/envs/surfel_splatting/lib/python3.8/site-packages (from requests->torch-geometric) (3.10)
+Requirement already satisfied: urllib3<3,>=1.21.1 in /home/aimi/miniconda3/envs/surfel_splatting/lib/python3.8/site-packages (from requests->torch-geometric) (2.2.3)
+Requirement already satisfied: certifi>=2017.4.17 in /home/aimi/miniconda3/envs/surfel_splatting/lib/python3.8/site-packages (from requests->torch-geometric) (2024.8.30)
+Requirement already satisfied: typing-extensions>=4.1.0 in /home/aimi/miniconda3/envs/surfel_splatting/lib/python3.8/site-packages (from multidict<7.0,>=4.5->aiohttp->torch-geometric) (4.9.0)
+Collecting propcache>=0.2.0 (from yarl<2.0,>=1.12.0->aiohttp->torch-geometric)
+  Downloading propcache-0.2.0-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (7.7 kB)
+Downloading torch_geometric-2.6.1-py3-none-any.whl (1.1 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.1/1.1 MB 3.5 MB/s eta 0:00:00
+Downloading psutil-7.2.0-cp36-abi3-manylinux2010_x86_64.manylinux_2_12_x86_64.manylinux_2_28_x86_64.whl (154 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 154.7/154.7 kB 12.6 MB/s eta 0:00:00
+Downloading aiohttp-3.10.11-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (1.3 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.3/1.3 MB 15.5 MB/s eta 0:00:00
+Downloading aiohappyeyeballs-2.4.4-py3-none-any.whl (14 kB)
+Downloading aiosignal-1.3.1-py3-none-any.whl (7.6 kB)
+Downloading async_timeout-5.0.1-py3-none-any.whl (6.2 kB)
+Downloading frozenlist-1.5.0-cp38-cp38-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl (243 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 243.1/243.1 kB 19.9 MB/s eta 0:00:00
+Downloading multidict-6.1.0-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (129 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 129.7/129.7 kB 12.8 MB/s eta 0:00:00
+Downloading yarl-1.15.2-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (319 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 319.0/319.0 kB 22.9 MB/s eta 0:00:00
+Downloading propcache-0.2.0-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (213 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 213.6/213.6 kB 15.4 MB/s eta 0:00:00
+Installing collected packages: psutil, propcache, multidict, frozenlist, async-timeout, aiohappyeyeballs, yarl, aiosignal, aiohttp, torch-geometric
+Successfully installed aiohappyeyeballs-2.4.4 aiohttp-3.10.11 aiosignal-1.3.1 async-timeout-5.0.1 frozenlist-1.5.0 multidict-6.1.0 propcache-0.2.0 psutil-7.2.0 torch-geometric-2.6.1 yarl-1.15.2
