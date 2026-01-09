@@ -35,8 +35,8 @@ model:
   # Fourier features for better high-frequency representation
   fourier_features:
     enabled: true
-    num_features: 256
-    sigma: 10.0
+    num_features: 512
+    sigma: 30.0
 
 # Training
 training:

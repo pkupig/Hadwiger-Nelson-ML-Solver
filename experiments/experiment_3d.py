@@ -7,6 +7,7 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
+from typing import List, Dict, Any
 import sys
 import os
 import json
@@ -345,21 +346,32 @@ def analyze_3d_results(results: Dict[int, Dict[str, Any]], output_dir: str):
         if results[k]['final_violation_rate'] < 1.0:  # 1%阈值
             feasible_k.append(k)
     
+    # 可行解确立上界，不可行暗示下界
     if feasible_k:
-        estimated_lower_bound = min(feasible_k)
-        print(f"\nEstimated lower bound for χ(ℝ³): ≥ {estimated_lower_bound}")
-        print(f"Feasible k values: {sorted(feasible_k)}")
-        
-        # 保存下界估计
-        bound_file = os.path.join(output_dir, "estimated_lower_bound.txt")
-        with open(bound_file, 'w') as f:
-            f.write(f"Estimated lower bound for χ(ℝ³): ≥ {estimated_lower_bound}\n")
-            f.write(f"Based on experiments with k = {k_values}\n")
-            f.write(f"Feasible k values (violation rate < 1%): {sorted(feasible_k)}\n")
-        
-        print(f"Lower bound estimate saved to: {bound_file}")
+        # 如果k可行，说明染色数 <= k，因此最小的可行k构成了紧致上界
+        upper_bound_estimate = min(feasible_k)
+        print(f"\nConstructive Upper Bound for χ(ℝ³): ≤ {upper_bound_estimate}")
+        print(f"Feasible k values (Solution Found): {sorted(feasible_k)}")
     else:
-        print("\nNo feasible k found in tested range")
+        print("\nNo constructive upper bound found in tested range.")
+
+    # 计算下界：查找最大的不可行k
+    all_tested = set(k_values)
+    feasible_set = set(feasible_k)
+    infeasible_k = sorted(list(all_tested - feasible_set))
+    
+    if infeasible_k:
+        # 如果k不可行，说明可能需要更多颜色，即 χ > k
+        lower_bound_hint = max(infeasible_k) + 1
+        print(f"Potential Lower Bound for χ(ℝ³): ≥ {lower_bound_hint} (based on failure at k={max(infeasible_k)})")
+    
+    # 保存修正后的结论
+    bound_file = os.path.join(output_dir, "chromatic_bounds.txt")
+    with open(bound_file, 'w') as f:
+        if feasible_k:
+            f.write(f"Upper Bound: χ(ℝ³) ≤ {min(feasible_k)}\n")
+        if infeasible_k:
+            f.write(f"Lower Bound Hint: χ(ℝ³) ≥ {max(infeasible_k) + 1}\n")
     
     return fig
 

@@ -6,6 +6,7 @@
 import torch
 import numpy as np
 from typing import Tuple, List, Optional, Dict
+from training.trainer import HadwigerNelsonTrainer
 import heapq
 import random
 
@@ -514,147 +515,175 @@ class GeometricHardExampleGenerator:
         return points
 
 
-class HardExampleTrainer:
-    """带难例挖掘的训练器"""
+class HardExampleTrainer(HadwigerNelsonTrainer):
+    """
+    带难例挖掘的训练器 (继承自标准训练器)
+    集成主动学习：在训练过程中自动识别并重点训练困难样本
+    """
     
     def __init__(self, 
                  model,
                  data_generator,
                  loss_fn,
+                 config,  # 现在支持直接传入 config
                  hard_example_bank=None,
                  mining_frequency: int = 10,
                  hard_example_ratio: float = 0.3,
                  device: str = "cuda"):
         
-        self.model = model
-        self.data_generator = data_generator
-        self.loss_fn = loss_fn
-        self.device = device
+        # 1. 初始化父类 (复用基础功能)
+        super().__init__(model, data_generator, loss_fn, config)
         
-        # 难例挖掘相关
+        # 2. 初始化难例挖掘特有的组件
         if hard_example_bank is None:
-            self.hard_example_bank = HardExampleBank(device=device)
+            self.hard_example_bank = HardExampleBank(device=self.device)
         else:
             self.hard_example_bank = hard_example_bank
-        
-        self.mining_frequency = mining_frequency
+            
+        # 从配置或参数中获取挖掘参数
+        # 优先使用传入参数，其次尝试从 config 中读取
+        if hasattr(config, 'data') and isinstance(config.data, dict):
+            he_config = config.data.get('hard_examples', {})
+            self.mining_frequency = he_config.get('mining_iterations', mining_frequency)
+        else:
+            self.mining_frequency = mining_frequency
+            
         self.hard_example_ratio = hard_example_ratio
         
-        # 自适应挖掘器
-        self.adaptive_miner = AdaptiveHardExampleMiner(device=device)
-        
-        # 几何难例生成器
+        # 自适应挖掘器和几何生成器
+        self.adaptive_miner = AdaptiveHardExampleMiner(device=self.device)
         self.geometric_generator = GeometricHardExampleGenerator(
             dim=data_generator.dim,
-            device=device
+            device=self.device
         )
         
         self.step_count = 0
-    
-    def train_step(self, optimizer, batch_size: int = 1024):
-        """执行一个训练步骤"""
+
+    def train_epoch(self):
+        """
+        重写父类的 train_epoch 以注入难例挖掘逻辑
+        """
         self.model.train()
-        self.step_count += 1
         
-        # 确定难例比例
-        use_hard_examples = (self.step_count % self.mining_frequency == 0)
-        
-        if use_hard_examples and self.hard_example_bank.analyze()["size"] > 0:
-            # 使用部分难例
-            num_hard = int(batch_size * self.hard_example_ratio)
-            num_random = batch_size - num_hard
-            
-            # 从难例银行采样
-            p1_hard, p2_hard = self.hard_example_bank.sample_batch(
-                num_hard, strategy="priority"
-            )
-            
-            # 生成随机样本
-            p1_random, p2_random = self.data_generator.get_batch(num_random)
-            
-            # 合并
-            if p1_hard is not None and p1_random is not None:
-                p1 = torch.cat([p1_hard, p1_random], dim=0)
-                p2 = torch.cat([p2_hard, p2_random], dim=0)
-            elif p1_hard is not None:
-                p1, p2 = p1_hard, p2_hard
-            else:
-                p1, p2 = p1_random, p2_random
+        # 计算温度退火 (同之前建议的修正)
+        progress = self.current_epoch / self.config.epochs
+        if progress < 0.5:
+            temperature = 2.0 - (1.9 * (progress / 0.5))
         else:
-            # 只使用随机样本
-            p1, p2 = self.data_generator.get_batch(batch_size)
-        
-        # 前向传播
-        out1 = self.model(p1)
-        out2 = self.model(p2)
-        
-        # 计算损失
-        total_loss, loss_dict = self.loss_fn(out1, out2)
-        
-        # 难例挖掘
-        if use_hard_examples:
-            # 计算每个点对的损失
-            with torch.no_grad():
-                # 这里简化处理：使用冲突损失作为难例标准
-                dot_product = torch.sum(out1 * out2, dim=1)  # 冲突损失
-                individual_losses = dot_product
+            temperature = 0.1
             
-            # 判断哪些是难例
-            hard_mask = torch.tensor([
-                self.adaptive_miner.should_keep_example(loss.item())
-                for loss in individual_losses
-            ], device=self.device)
+        epoch_loss = 0
+        loss_stats = {}
+        
+        # 计算迭代次数
+        num_batches = (self.config.num_train_pairs + self.config.batch_size - 1) // self.config.batch_size
+        
+        for batch_idx in range(num_batches):
+            self.step_count += 1
             
-            if hard_mask.any():
-                # 添加难例到银行
-                p1_hard = p1[hard_mask]
-                p2_hard = p2[hard_mask]
-                losses_hard = individual_losses[hard_mask]
+            # --- 难例挖掘数据混合逻辑 ---
+            use_hard_examples = (self.step_count % self.mining_frequency == 0)
+            batch_size = self.config.batch_size
+            
+            if use_hard_examples and self.hard_example_bank.analyze()["size"] > batch_size // 10:
+                # 使用部分难例
+                num_hard = int(batch_size * self.hard_example_ratio)
+                num_random = batch_size - num_hard
                 
-                self.hard_example_bank.add_batch(p1_hard, p2_hard, losses_hard)
+                # 从难例银行采样
+                p1_hard, p2_hard = self.hard_example_bank.sample_batch(
+                    num_hard, strategy="priority"
+                )
+                
+                # 生成随机样本 (使用混合链式生成)
+                # 注意：假设 generator 已经修补了 chain generation
+                p1_random, p2_random = self.data_generator.get_batch()
+                # 截取需要的数量
+                if p1_random.shape[0] > num_random:
+                    p1_random = p1_random[:num_random]
+                    p2_random = p2_random[:num_random]
+                
+                # 合并数据
+                if p1_hard is not None:
+                    p1 = torch.cat([p1_hard, p1_random], dim=0)
+                    p2 = torch.cat([p2_hard, p2_random], dim=0)
+                else:
+                    p1, p2 = p1_random, p2_random
+            else:
+                # 只使用随机样本
+                p1, p2 = self.data_generator.get_batch()
+            
+            p1, p2 = p1.to(self.device), p2.to(self.device)
+            
+            # --- 前向传播与挖掘 ---
+            # 1. 前向传播
+            out1 = self.model(p1, temperature=temperature)
+            out2 = self.model(p2, temperature=temperature)
+            
+            # 2. 计算损失
+            total_loss, batch_loss_dict = self.loss_fn(out1, out2)
+            
+            # 3. 在线难例挖掘 (Online Mining)
+            # 即使当前batch主要是随机生成的，我们也检查其中是否有新的难例
+            with torch.no_grad():
+                # 计算逐点冲突程度 (dot product)
+                conflict = torch.sum(out1 * out2, dim=1)
+                
+                # 判断是否为难例
+                hard_mask = torch.tensor([
+                    self.adaptive_miner.should_keep_example(c.item())
+                    for c in conflict
+                ], device=self.device)
+                
+                if hard_mask.any():
+                    # 将发现的新难例存入银行
+                    self.hard_example_bank.add_batch(
+                        p1[hard_mask], 
+                        p2[hard_mask], 
+                        conflict[hard_mask]
+                    )
+            
+            # --- 反向传播 ---
+            self.optimizer.zero_grad()
+            total_loss.backward()
+            
+            if self.config.gradient_clip > 0:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.gradient_clip)
+                
+            self.optimizer.step()
+            
+            # 记录统计
+            epoch_loss += total_loss.item()
+            for k, v in batch_loss_dict.items():
+                loss_stats[k] = loss_stats.get(k, 0.0) + v.item() if isinstance(v, torch.Tensor) else v
+
+        # 平均统计数据
+        avg_loss = epoch_loss / num_batches
+        avg_stats = {k: v / num_batches for k, v in loss_stats.items()}
+        avg_stats['total_loss'] = avg_loss
         
-        # 反向传播
-        optimizer.zero_grad()
-        total_loss.backward()
-        optimizer.step()
+        # 记录难例库状态
+        bank_stats = self.hard_example_bank.analyze()
+        avg_stats['bank_size'] = bank_stats['size']
+        avg_stats['bank_max_loss'] = bank_stats['max_loss']
         
-        return total_loss.item(), loss_dict
-    
+        return avg_stats
+
+    # 保留 add_geometric_hard_examples 等特有方法
     def add_geometric_hard_examples(self):
         """添加几何难例到银行"""
+        # ... (保持原有代码不变) ...
+        super().add_geometric_hard_examples() # 如果原代码是独立的，这里不需要super，直接拷贝原逻辑即可
+        # (原逻辑拷贝过来)
         try:
-            # 生成Moser Spindle
             points, edges = self.geometric_generator.generate_moser_spindle()
-            
-            # 将边转换为点对
-            p1_list = []
-            p2_list = []
-            
-            for i, j in edges:
-                p1_list.append(points[i].cpu().numpy())
-                p2_list.append(points[j].cpu().numpy())
-            
+            p1_list = [points[i].cpu().numpy() for i, j in edges]
+            p2_list = [points[j].cpu().numpy() for i, j in edges]
             if p1_list:
-                p1 = torch.tensor(p1_list, device=self.device)
-                p2 = torch.tensor(p2_list, device=self.device)
-                
-                # 计算损失（假设高损失）
+                p1 = torch.tensor(np.array(p1_list), device=self.device)
+                p2 = torch.tensor(np.array(p2_list), device=self.device)
                 losses = torch.ones(len(p1_list), device=self.device) * 0.5
-                
                 self.hard_example_bank.add_batch(p1, p2, losses)
                 print(f"Added {len(p1_list)} Moser Spindle edges to hard example bank")
-        
         except Exception as e:
             print(f"Failed to add geometric hard examples: {e}")
-    
-    def get_statistics(self) -> Dict:
-        """获取训练统计信息"""
-        bank_stats = self.hard_example_bank.analyze()
-        
-        return {
-            "hard_example_bank": bank_stats,
-            "adaptive_threshold": self.adaptive_miner.get_threshold(),
-            "step_count": self.step_count,
-            "mining_frequency": self.mining_frequency,
-            "hard_example_ratio": self.hard_example_ratio
-        }

@@ -23,7 +23,7 @@ class PointPairGenerator:
             np.random.seed(seed)
             random.seed(seed)
     
-    def get_batch(self, strategy: str = "unit_sphere") -> Tuple[torch.Tensor, torch.Tensor]:
+    def get_batch(self, strategy: str = "mixed_chain") -> Tuple[torch.Tensor, torch.Tensor]:
         """
         生成一批距离为1的点对
         
@@ -33,7 +33,9 @@ class PointPairGenerator:
                 - "random_distance": 随机距离但固定一对为1
                 - "grid": 网格采样（用于验证）
         """
-        if strategy == "unit_sphere":
+        if strategy == "mixed_chain":
+            return self._sample_chain_structure()
+        elif strategy == "unit_sphere":
             return self._sample_unit_sphere()
         elif strategy == "random_distance":
             return self._sample_random_distance()
@@ -41,7 +43,40 @@ class PointPairGenerator:
             return self._sample_grid()
         else:
             raise ValueError(f"Unknown strategy: {strategy}")
-    
+
+    def _sample_chain_structure(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        混合生成独立对和链式结构 (A-B-C)
+        链式结构强迫模型处理局部依赖：若 A=Red, B!=Red; 若 B=Green, C!=Green。
+        """
+        # 一半数据生成标准点对 A-B
+        half_batch = self.batch_size // 2
+        p1_a, p2_a = self._sample_unit_sphere_subset(half_batch)
+        
+        # 另一半数据生成链式 B-C (利用上一组的 p2 作为起点)
+        # 这样我们在同一个 batch 里有了 A->B 和 B->C (虽然在 Tensor 中是分开的，
+        # 但如果是基于 Graph 的训练或后续 Hard Mining 会捕捉到这种空间关系)
+        # 更直接的方法是生成 explicit chains:
+        
+        # 重新采样起始点
+        start_points = torch.rand(half_batch, self.dim, device=self.device) * (self.space_range[1] - self.space_range[0]) + self.space_range[0]
+        
+        # A -> B
+        v1 = torch.randn(half_batch, self.dim, device=self.device)
+        v1 = v1 / torch.norm(v1, dim=1, keepdim=True)
+        points_B = start_points + v1
+        
+        # B -> C
+        v2 = torch.randn(half_batch, self.dim, device=self.device)
+        v2 = v2 / torch.norm(v2, dim=1, keepdim=True)
+        points_C = points_B + v2
+        
+        # 将 (A, B) 和 (B, C) 拼接返回
+        p1 = torch.cat([start_points, points_B], dim=0)
+        p2 = torch.cat([points_B, points_C], dim=0)
+        
+        return p1, p2
+
     def _sample_unit_sphere(self) -> Tuple[torch.Tensor, torch.Tensor]:
         """在单位超球面上均匀采样位移向量"""
         # 1. 随机采样起始点 P1
@@ -62,11 +97,48 @@ class PointPairGenerator:
         
         # 验证距离（调试用）
         distances = torch.norm(p2 - p1, dim=1)
-        assert torch.allclose(distances, torch.ones_like(distances), rtol=1e-5), \
+        assert torch.allclose(distances, torch.ones_like(distances), rtol=1e-8), \
             f"Distance constraint violated! Mean distance: {distances.mean().item()}"
         
         return p1, p2
     
+    def _sample_unit_sphere_subset(self, n: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        生成 n 个单位距离的点对 (辅助函数)
+        
+        Args:
+            n: 生成的点对数量
+            
+        Returns:
+            p1, p2: [n, dim]
+        """
+        # 1. 随机采样起始点 P1
+        low, high = self.space_range
+        p1 = torch.rand(n, self.dim, device=self.device) * (high - low) + low
+        
+        # 2. 生成单位随机向量 v（超球面上的均匀分布）
+        # 使用正态分布然后归一化
+        v = torch.randn(n, self.dim, device=self.device)
+        v_norm = torch.norm(v, dim=1, keepdim=True)
+        # 防止除零
+        v = v / (v_norm + 1e-8)
+        
+        # 3. 确保精确的单位长度 (Double check normalization)
+        # 建议：如果开启了 float64 精度，这里会更精确
+        v = v / torch.norm(v, dim=1, keepdim=True)
+        
+        # 4. 得到 P2 = P1 + v
+        p2 = p1 + v
+        
+        # 验证距离
+        # if self.device == 'cpu' or n < 10000:
+        #     distances = torch.norm(p2 - p1, dim=1)
+        #     # 注意：使用 float32，rtol应该是 1e-5；如果 float64，可以是 1e-7
+        #     assert torch.allclose(distances, torch.ones_like(distances), rtol=1e-5), \
+        #         f"Distance constraint violated! Mean: {distances.mean().item()}"
+        
+        return p1, p2
+
     def _sample_random_distance(self) -> Tuple[torch.Tensor, torch.Tensor]:
         """采样随机距离的点对，但确保至少一对距离为1"""
         low, high = self.space_range

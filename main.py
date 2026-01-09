@@ -5,8 +5,10 @@ Hadwiger-Nelson Problem ML Solver
 """
 
 import argparse
+from logging import config
 import os
 import sys
+from xml.parsers.expat import model
 import yaml
 from pathlib import Path
 
@@ -14,9 +16,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config.config import load_config
-from training.trainer import TrainingConfig, MultiDimensionTrainer
+from training.trainer import TrainingConfig, MultiDimensionTrainer, HadwigerNelsonTrainer
 from evaluation.visualizer import HadwigerNelsonVisualizer, ResultAnalyzer
 from data.generator import PointPairGenerator
+from data.hard_examples import HardExampleTrainer
 from models.mlp_mapper import MLPColorMapper
 from losses.constraint_loss import ConstraintLoss
 
@@ -127,7 +130,7 @@ def run_single_experiment(dim: int, k: int, config: dict, output_dir: str):
         spectral_weight=loss_weights['spectral']
     )
     
-    # 创建训练配置
+    # 创建训练配置对象 (TrainingConfig)
     train_config = TrainingConfig(
         epochs=config['training']['epochs'],
         batch_size=config['data']['batch_size'],
@@ -142,15 +145,41 @@ def run_single_experiment(dim: int, k: int, config: dict, output_dir: str):
         seed=config['project']['seed']
     )
     
-    # 创建训练器并训练
-    from training.trainer import HadwigerNelsonTrainer
-    trainer = HadwigerNelsonTrainer(
-        model=model,
-        data_generator=generator,
-        loss_fn=loss_fn,
-        config=train_config
-    )
+    # ---------------------------------------------------------
+    # 逻辑修正：动态选择训练器 (Hard Example Mining vs Standard)
+    # ---------------------------------------------------------
+    use_hard_examples = config['data'].get('hard_examples', {}).get('enabled', False)
     
+    if use_hard_examples:
+        print(f"\n>>> [System] Activating Hard Example Mining (Active Learning)")
+        # 动态导入以避免循环依赖或未使用的导入
+        from data.hard_examples import HardExampleTrainer
+        
+        # 实例化难例挖掘训练器
+        trainer = HardExampleTrainer(
+            model=model,
+            data_generator=generator,
+            loss_fn=loss_fn,
+            config=train_config,  # 传入 TrainingConfig 对象
+            hard_example_ratio=0.3
+        )
+        
+        # 预加载几何难例 (Moser Spindle 等)
+        # 这一步非常关键，给模型提供初始的“硬骨头”
+        trainer.add_geometric_hard_examples()
+        
+    else:
+        print(f"\n>>> [System] Using Standard Random Sampling Trainer")
+        from training.trainer import HadwigerNelsonTrainer
+        
+        trainer = HadwigerNelsonTrainer(
+            model=model,
+            data_generator=generator,
+            loss_fn=loss_fn,
+            config=train_config
+        )
+    
+    # 开始训练
     history = trainer.train()
     
     # 最终评估
@@ -182,7 +211,7 @@ def run_single_experiment(dim: int, k: int, config: dict, output_dir: str):
 def main():
     """主函数"""
     args = parse_args()
-    
+    torch.set_default_dtype(torch.float64)
     # 加载配置
     config = load_config(args.config)
     

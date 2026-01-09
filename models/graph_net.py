@@ -240,7 +240,7 @@ class DynamicGraphBuilder:
     def __init__(self, 
                  k_neighbors: int = 10,
                  max_distance: float = 2.0,
-                 build_method: str = "knn"):
+                 build_method: str = "constraint_only"): # 默认方法修改为 constraint_only
         
         self.k_neighbors = k_neighbors
         self.max_distance = max_distance
@@ -274,6 +274,12 @@ class DynamicGraphBuilder:
         elif self.build_method == "hybrid":
             # 混合：knn + 单位距离边
             edge_index = self._build_hybrid_graph(points, unit_distance_edges)
+        elif self.build_method == "constraint_only":
+            # 修正：仅构建约束图 (距离为1的边)
+            if unit_distance_edges is not None:
+                edge_index = unit_distance_edges
+            else:
+                edge_index = self._build_constraint_graph(points)
         else:
             raise ValueError(f"Unknown build_method: {self.build_method}")
         
@@ -281,6 +287,12 @@ class DynamicGraphBuilder:
         edge_attr = self._compute_edge_attributes(points, edge_index)
         
         # 创建PyG Data对象
+        # 注意：如果 edge_index 是空的，PyG 可能会警告或报错，需确保至少有空tensor
+        if edge_index.shape[1] == 0:
+             # 如果没有边，创建一个空的 edge_index
+             edge_index = torch.zeros((2, 0), dtype=torch.long, device=points.device)
+             edge_attr = torch.zeros((0, 1), dtype=points.dtype, device=points.device)
+
         data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
         
         return data
@@ -288,10 +300,9 @@ class DynamicGraphBuilder:
     def _build_knn_graph(self, points: torch.Tensor) -> torch.Tensor:
         """构建k最近邻图"""
         from sklearn.neighbors import kneighbors_graph
-        import scipy.sparse
         
         # 转换为numpy
-        points_np = points.cpu().numpy()
+        points_np = points.detach().cpu().numpy()
         
         # 构建knn图
         adj_matrix = kneighbors_graph(
@@ -306,7 +317,7 @@ class DynamicGraphBuilder:
         edge_index = torch.stack([
             torch.from_numpy(adj_coo.row).long(),
             torch.from_numpy(adj_coo.col).long()
-        ])
+        ]).to(points.device)
         
         return edge_index
     
@@ -315,7 +326,7 @@ class DynamicGraphBuilder:
         from sklearn.neighbors import radius_neighbors_graph
         
         # 转换为numpy
-        points_np = points.cpu().numpy()
+        points_np = points.detach().cpu().numpy()
         
         # 构建半径图
         adj_matrix = radius_neighbors_graph(
@@ -330,7 +341,26 @@ class DynamicGraphBuilder:
         edge_index = torch.stack([
             torch.from_numpy(adj_coo.row).long(),
             torch.from_numpy(adj_coo.col).long()
-        ])
+        ]).to(points.device)
+        
+        return edge_index
+        
+    def _build_constraint_graph(self, points: torch.Tensor, tol: float = 1e-4) -> torch.Tensor:
+        """
+        构建约束图：仅连接距离为 1.0 ± tol 的点
+        """
+        # 计算所有点对距离 (注意内存消耗，这里假设点数不多，如<5000)
+        # 如果点数很大，需要分块计算或使用 KDTree
+        dist_matrix = torch.cdist(points, points)
+        
+        # 创建掩码：|d - 1| < tol
+        mask = (torch.abs(dist_matrix - 1.0) < tol)
+        
+        # 去掉对角线
+        mask.fill_diagonal_(False)
+        
+        # 转换为 edge_index [2, num_edges]
+        edge_index = mask.nonzero().t()
         
         return edge_index
     
@@ -357,6 +387,9 @@ class DynamicGraphBuilder:
                                 points: torch.Tensor,
                                 edge_index: torch.Tensor) -> torch.Tensor:
         """计算边特征（距离）"""
+        if edge_index.shape[1] == 0:
+            return torch.zeros((0, 1), device=points.device)
+            
         src_nodes = points[edge_index[0]]
         dst_nodes = points[edge_index[1]]
         
@@ -385,7 +418,7 @@ class GraphBasedColorMapper(nn.Module):
             graph_builder_kwargs = {
                 'k_neighbors': 10,
                 'max_distance': 2.0,
-                'build_method': 'hybrid'
+                'build_method': 'constraint_only' # 修改默认值为 constraint_only
             }
         
         self.graph_builder = DynamicGraphBuilder(**graph_builder_kwargs)

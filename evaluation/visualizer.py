@@ -468,18 +468,25 @@ class ResultAnalyzer:
         summary_lines.append("-" * 40)
         
         for dim in sorted(self.results.keys()):
-            feasible_k = []
-            for k in sorted(self.results[dim].keys()):
-                if self.results[dim][k]['final_violation_rate'] < 1.0:
-                    feasible_k.append(k)
+            # ---------------------------------------------------------
+            # Feasible (Violation ≈ 0) => Upper Bound (我们构造了解)
+            # Infeasible (Violation > 0) => Lower Bound Hint (我们找不到解)
+            # ---------------------------------------------------------
+            
+            dim_res = self.results[dim]
+            feasible_k = [k for k in dim_res if dim_res[k]['final_violation_rate'] < 1e-3] # 收紧阈值
+            infeasible_k = [k for k in dim_res if dim_res[k]['final_violation_rate'] >= 1e-3]
             
             if feasible_k:
-                lower_bound = min(feasible_k)
-                summary_lines.append(f"{dim}D: χ(ℝ^{dim}) ≥ {lower_bound}")
-            else:
-                summary_lines.append(f"{dim}D: No feasible k found in tested range")
-        
-        summary_lines.append("=" * 80)
+                upper = min(feasible_k)
+                summary_lines.append(f"{dim}D: Upper Bound ≤ {upper} (Constructed)")
+            else:       
+                summary_lines.append(f"{dim}D: No Upper Bound found in range")
+                
+            if infeasible_k:
+                # 如果 k 是不可行的，且我们尽力了，那么 χ 可能 > k
+                lower_hint = max(infeasible_k) + 1
+                summary_lines.append(f"{dim}D: Lower Bound Hint ≥ {lower_hint} (Based on failure at k={max(infeasible_k)})")
         
         return "\n".join(summary_lines)
     

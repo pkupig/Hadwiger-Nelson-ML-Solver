@@ -208,25 +208,22 @@ python experiments/experiment_4d.py
 # 4. 模型比较
 python experiments/model_comparison.py
 
-# 5. 轨形实验（需要额外实现）
-python experiments/orbifold_experiment.py
-
-# 6. 批量运行所有实验
+# 5. 批量运行所有实验
 python run_experiments.py
 
-# 7. 启用难例挖掘的训练
+# 6. 启用难例挖掘的训练
 python main.py --hard-examples --mining-frequency 10 --hard-ratio 0.3
 
-# 8. 使用残差网络
+# 7. 使用残差网络
 python main.py --model residual --hidden-dims 128 256 256 128
 
-# 9. 使用傅里叶特征
+# 8. 使用傅里叶特征
 python main.py --use-fourier --fourier-features 512 --fourier-sigma 5.0
 
-# 10. 使用谱损失
+# 9. 使用谱损失
 python main.py --loss spectral --lambda-spec 0.05 --spectral-mode smoothness
 
-# 11. 完整的高级训练
+# 10. 完整的高级训练
 python main.py \
   --model residual \
   --use-fourier \

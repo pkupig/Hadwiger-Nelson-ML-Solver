@@ -189,7 +189,12 @@ class HadwigerNelsonTrainer:
         
         start_time = time.time()
         
-        for epoch in range(self.current_epoch, self.current_epoch + num_epochs):
+        # 修正1：在循环外计算目标结束Epoch
+        start_epoch = self.current_epoch
+        target_end_epoch = start_epoch + num_epochs
+        
+        # 修正2：循环范围使用固定的 start 和 target
+        for epoch in range(start_epoch, target_end_epoch):
             self.current_epoch = epoch + 1
             
             # 训练一个epoch
@@ -206,8 +211,8 @@ class HadwigerNelsonTrainer:
                 for key, value in val_metrics.items():
                     self.writer.add_scalar(f'Validation/{key}', value, epoch)
                 
-                # 打印进度
-                print(f"Epoch {epoch+1:04d}/{self.current_epoch + num_epochs - 1:04d} | "
+                # 修正3：打印时使用固定的 target_end_epoch
+                print(f"Epoch {epoch+1:04d}/{target_end_epoch:04d} | "
                       f"Train Loss: {train_metrics['total_loss']:.6f} | "
                       f"Conflict: {train_metrics['conflict_loss']:.6f} | "
                       f"Val Violation: {val_metrics['violation_rate']:.2f}% | "
