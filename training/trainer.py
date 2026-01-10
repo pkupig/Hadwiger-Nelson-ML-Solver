@@ -3,16 +3,21 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 import numpy as np
+import matplotlib.pyplot as plt
 from typing import Dict, List, Tuple, Optional, Any
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import math
+import random
+
 
 @dataclass
 class TrainingConfig:
     """训练配置"""
     epochs: int = 5000
     batch_size: int = 4096
+    num_train_pairs: int = 1000000
     learning_rate: float = 0.001
     weight_decay: float = 1e-5
     gradient_clip: float = 1.0
@@ -22,6 +27,134 @@ class TrainingConfig:
     log_dir: str = "./logs"
     device: str = "cuda"
     seed: int = 42
+    
+    # 模拟退火配置
+    use_simulated_annealing: bool = True
+    sa_config: dict = field(default_factory=lambda: {
+        'sa_freq': 10,
+        'sa_steps': 3,
+        'sa_T_init': 0.5,
+        'sa_T_min': 1e-4,
+        'sa_alpha': 0.95,
+        'sa_perturb_std': 0.005
+    })
+    anneal_epochs: int = 1000
+    min_entropy_weight: float = 0.01
+    max_entropy_weight: float = 0.1
+
+
+class _SAOptimizerWrapper(optim.Optimizer):
+    """
+    模拟退火优化器包装器
+    """
+    
+    def __init__(self, base_optimizer, model, loss_fn, sa_config):
+        self.param_groups = base_optimizer.param_groups
+        defaults = {key: value for key, value in base_optimizer.defaults.items()}
+        super().__init__(self.param_groups, defaults)
+        self.base_optimizer = base_optimizer
+        self.model = model
+        self.loss_fn = loss_fn
+        self.sa_config = sa_config
+        
+        # SA参数
+        self.sa_freq = sa_config.get('sa_freq', 10)
+        self.sa_steps = sa_config.get('sa_steps', 3)
+        self.sa_T_init = sa_config.get('sa_T_init', 0.5)
+        self.sa_T_min = sa_config.get('sa_T_min', 1e-4)
+        self.sa_alpha = sa_config.get('sa_alpha', 0.95)
+        self.sa_perturb_std = sa_config.get('sa_perturb_std', 0.005)
+        
+        # 状态
+        self.T_curr = self.sa_T_init
+        self.step_count = 0
+        self.best_state = None
+        self.best_loss = float('inf')
+        
+        # 初始最佳状态
+        self.best_state = {k: v.clone() for k, v in model.state_dict().items()}
+    
+    def _simulated_annealing_step(self, p1, p2):
+        """执行一步模拟退火"""
+        device = p1.device
+        
+        # 保存当前状态
+        old_state = {k: v.clone() for k, v in self.model.state_dict().items()}
+        
+        # 计算当前损失
+        with torch.no_grad():
+            out1 = self.model(p1)
+            out2 = self.model(p2)
+            current_loss, _ = self.loss_fn(out1, out2)
+            current_loss_val = current_loss.item()
+        
+        # 随机扰动参数
+        with torch.no_grad():
+            for param in self.model.parameters():
+                if param.requires_grad:
+                    noise = torch.randn_like(param).to(device) * self.sa_perturb_std
+                    param.data.add_(noise)
+        
+        # 计算扰动后损失
+        with torch.no_grad():
+            out1 = self.model(p1)
+            out2 = self.model(p2)
+            new_loss, _ = self.loss_fn(out1, out2)
+            new_loss_val = new_loss.item()
+        
+        # Metropolis准则
+        delta = new_loss_val - current_loss_val
+        
+        if delta < 0 or random.random() < math.exp(-delta / self.T_curr):
+            # 接受新状态
+            current_loss_val = new_loss_val
+            
+            # 更新最佳状态
+            if new_loss_val < self.best_loss:
+                self.best_loss = new_loss_val
+                self.best_state = {k: v.clone() for k, v in self.model.state_dict().items()}
+        else:
+            # 拒绝新状态，恢复旧状态
+            self.model.load_state_dict(old_state)
+        
+        # 降低温度
+        self.T_curr = max(self.sa_T_min, self.T_curr * self.sa_alpha)
+        
+        return current_loss_val
+    
+    def step(self, p1=None, p2=None, closure=None):
+        """执行一步优化"""
+        # 执行基础优化器步骤
+        self.base_optimizer.step(closure)
+        
+        # 定期执行模拟退火
+        self.step_count += 1
+        
+        if p1 is not None and p2 is not None and self.step_count % self.sa_freq == 0:
+            for _ in range(self.sa_steps):
+                self._simulated_annealing_step(p1, p2)
+    
+    def zero_grad(self, set_to_none: bool = False):
+        self.base_optimizer.zero_grad(set_to_none)
+    
+    def state_dict(self):
+        return {
+            'base_optimizer': self.base_optimizer.state_dict(),
+            'step_count': self.step_count,
+            'T_curr': self.T_curr,
+            'best_loss': self.best_loss,
+            'sa_config': self.sa_config
+        }
+    
+    def load_state_dict(self, state_dict):
+        self.base_optimizer.load_state_dict(state_dict['base_optimizer'])
+        self.step_count = state_dict.get('step_count', 0)
+        self.T_curr = state_dict.get('T_curr', self.sa_T_init)
+        self.best_loss = state_dict.get('best_loss', float('inf'))
+        self.sa_config = state_dict.get('sa_config', {})
+    
+    def __getattr__(self, name):
+        return getattr(self.base_optimizer, name)
 
 
 class HadwigerNelsonTrainer:
@@ -43,11 +176,7 @@ class HadwigerNelsonTrainer:
         self.model = self.model.to(self.device)
         
         # 优化器
-        self.optimizer = optim.AdamW(
-            model.parameters(),
-            lr=config.learning_rate,
-            weight_decay=config.weight_decay
-        )
+        self.optimizer = self._create_optimizer()
         
         # 学习率调度器
         self.scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
@@ -67,14 +196,35 @@ class HadwigerNelsonTrainer:
         # 训练状态
         self.current_epoch = 0
         self.best_loss = float('inf')
+        self.best_violation_rate = float('inf')
         self.train_history = []
         
         # 设置随机种子
         if config.seed is not None:
             self._set_seed(config.seed)
     
+    def _create_optimizer(self):
+        """创建优化器"""
+        base_optimizer = optim.AdamW(
+            self.model.parameters(),
+            lr=self.config.learning_rate,
+            weight_decay=self.config.weight_decay
+        )
+        
+        if not self.config.use_simulated_annealing:
+            return base_optimizer
+        
+        # 如果启用模拟退火，返回包装器
+        print(f"[Trainer] Enabling Simulated Annealing")
+        return _SAOptimizerWrapper(
+            base_optimizer=base_optimizer,
+            model=self.model,
+            loss_fn=self.loss_fn,
+            sa_config=self.config.sa_config
+        )
+    
     def _set_seed(self, seed: int):
-        """设置随机种子"""
+        """设置随机种子）"""
         torch.manual_seed(seed)
         np.random.seed(seed)
         if torch.cuda.is_available():
@@ -116,7 +266,18 @@ class HadwigerNelsonTrainer:
                     self.config.gradient_clip
                 )
             
-            self.optimizer.step()
+            # 优化步骤
+            if self.config.use_simulated_annealing:
+                self.optimizer.step(p1, p2)
+            else:
+                self.optimizer.step()
+
+            # 熵退火（余弦退火）
+
+            progress = min(1.0, self.current_epoch / self.config.anneal_epochs)
+            entropy_weight = self.config.min_entropy_weight + 0.5 * (self.config.max_entropy_weight - self.config.min_entropy_weight) * (1 - math.cos(math.pi * progress))
+            self.loss_fn.set_entropy_weight(entropy_weight)
+
             
             # 记录损失
             epoch_losses.append(total_loss.item())
@@ -131,11 +292,14 @@ class HadwigerNelsonTrainer:
         avg_conflict = np.mean(epoch_conflict_losses)
         avg_entropy = np.mean(epoch_entropy_losses)
         
+        # 获取当前学习率
+        current_lr = self.optimizer.param_groups[0]['lr']
+        
         return {
             'total_loss': avg_loss,
             'conflict_loss': avg_conflict,
             'entropy_loss': avg_entropy,
-            'learning_rate': self.optimizer.param_groups[0]['lr']
+            'learning_rate': current_lr
         }
     
     def validate(self, num_samples: int = 10000) -> Dict[str, float]:
@@ -189,11 +353,9 @@ class HadwigerNelsonTrainer:
         
         start_time = time.time()
         
-        # 修正1：在循环外计算目标结束Epoch
         start_epoch = self.current_epoch
         target_end_epoch = start_epoch + num_epochs
         
-        # 修正2：循环范围使用固定的 start 和 target
         for epoch in range(start_epoch, target_end_epoch):
             self.current_epoch = epoch + 1
             
@@ -211,7 +373,6 @@ class HadwigerNelsonTrainer:
                 for key, value in val_metrics.items():
                     self.writer.add_scalar(f'Validation/{key}', value, epoch)
                 
-                # 修正3：打印时使用固定的 target_end_epoch
                 print(f"Epoch {epoch+1:04d}/{target_end_epoch:04d} | "
                       f"Train Loss: {train_metrics['total_loss']:.6f} | "
                       f"Conflict: {train_metrics['conflict_loss']:.6f} | "
@@ -279,178 +440,100 @@ class HadwigerNelsonTrainer:
         print(f"从 epoch {self.current_epoch} 加载检查点")
         print(f"最佳损失: {self.best_loss:.4f}")
 
-
 class MultiDimensionTrainer:
-    """多维度训练器：同时在2D、3D、4D上训练"""
+    """
+    多维度训练管理器
+    主要用于协调多个维度的实验并进行结果比较
+    """
     
     def __init__(self, 
-                 dims: List[int] = [2, 3, 4],
-                 colors_per_dim: Dict[int, List[int]] = None,
-                 base_config: TrainingConfig = None):
+                 dims: List[int],
+                 colors_per_dim: Dict[int, List[int]],
+                 base_config: TrainingConfig):
         
         self.dims = dims
-        
-        if colors_per_dim is None:
-            colors_per_dim = {
-                2: [3, 4, 5, 6, 7, 8],
-                3: [4, 5, 6, 7, 8, 9, 10],
-                4: [5, 6, 7, 8, 9, 10, 11, 12]
-            }
         self.colors_per_dim = colors_per_dim
-        
-        self.base_config = base_config or TrainingConfig()
-        
-        # 存储每个维度的训练器
-        self.trainers = {}
-        self.results = {}
+        self.base_config = base_config
+        self.results = {}  # 存储所有结果
     
-    def run_all_experiments(self):
-        """运行所有维度的实验"""
-        print("=" * 80)
-        print("开始多维度Hadwiger-Nelson实验")
-        print("=" * 80)
-        
-        for dim in self.dims:
-            print(f"\n{'='*60}")
-            print(f"维度 {dim}D 实验")
-            print('='*60)
+    def plot_comparison(self, save_path: str = "dimension_comparison.png") -> plt.Figure:
+        """
+        绘制不同维度的对比图
+        """
+        if not self.results:
+            print("No results to plot.")
+            return None
             
-            self.results[dim] = {}
+        # 准备数据
+        fig, axes = plt.subplots(1, 2, figsize=(15, 6))
+        
+        # 1. 冲突率比较
+        ax1 = axes[0]
+        colors = ['b', 'g', 'r', 'c', 'm']
+        markers = ['o', 's', '^', 'D', 'v']
+        
+        for idx, dim in enumerate(sorted(self.results.keys())):
+            dim_results = self.results[dim]
+            k_values = sorted(dim_results.keys())
+            violation_rates = [dim_results[k]['final_violation_rate'] for k in k_values]
             
-            for k in self.colors_per_dim[dim]:
-                print(f"\n测试颜色数 k = {k}")
-                print('-' * 40)
-                
-                # 创建数据生成器
-                from data.generator import PointPairGenerator
-                generator = PointPairGenerator(
-                    dim=dim,
-                    batch_size=self.base_config.batch_size,
-                    device=self.base_config.device
-                )
-                
-                # 创建模型
-                from models.mlp_mapper import MLPColorMapper
-                model = MLPColorMapper(
-                    input_dim=dim,
-                    num_colors=k,
-                    hidden_dims=[128, 256, 128]
-                )
-                
-                # 创建损失函数
-                from losses.constraint_loss import ConstraintLoss
-                loss_fn = ConstraintLoss(
-                    conflict_weight=1.0,
-                    entropy_weight=0.1,
-                    uniformity_weight=0.01
-                )
-                
-                # 创建训练器
-                trainer = HadwigerNelsonTrainer(
-                    model=model,
-                    data_generator=generator,
-                    loss_fn=loss_fn,
-                    config=self.base_config
-                )
-                
-                # 训练
-                history = trainer.train(num_epochs=min(self.base_config.epochs, 2000))
-                
-                # 最终验证
-                final_metrics = trainer.validate(num_samples=50000)
-                
-                # 保存结果
-                self.results[dim][k] = {
-                    'final_violation_rate': final_metrics['violation_rate'],
-                    'final_loss': final_metrics['validation_loss'],
-                    'best_violation_rate': trainer.best_loss,
-                    'history': history
-                }
-                
-                print(f"最终冲突率: {final_metrics['violation_rate']:.2f}%")
-        
-        return self.results
-    
-    def plot_comparison(self):
-        """绘制多维度比较图"""
-        import matplotlib.pyplot as plt
-        
-        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-        
-        # 1. 各维度不同k值的最终冲突率
-        ax1 = axes[0, 0]
-        for dim in self.dims:
-            k_values = sorted(self.results[dim].keys())
-            violation_rates = [self.results[dim][k]['final_violation_rate'] for k in k_values]
-            ax1.plot(k_values, violation_rates, 'o-', label=f'{dim}D', linewidth=2)
-        
+            color = colors[idx % len(colors)]
+            marker = markers[idx % len(markers)]
+            
+            ax1.plot(k_values, violation_rates, f'{color}{marker}-', 
+                    linewidth=2, markersize=8, label=f'{dim}D')
+            
+        ax1.axhline(y=1.0, color='k', linestyle='--', alpha=0.5, label='1% Threshold')
         ax1.set_xlabel('Number of colors (k)')
         ax1.set_ylabel('Violation Rate (%)')
-        ax1.set_title('Violation Rate vs k for Different Dimensions')
+        ax1.set_title('Violation Rate vs. Colors across Dimensions')
         ax1.legend()
         ax1.grid(True, alpha=0.3)
         
-        # 2. 固定k值，比较不同维度
-        ax2 = axes[0, 1]
-        common_k = [4, 5, 6, 7, 8]
-        for k in common_k:
-            dims = []
-            rates = []
-            for dim in self.dims:
-                if k in self.results[dim]:
-                    dims.append(dim)
-                    rates.append(self.results[dim][k]['final_violation_rate'])
-            if rates:
-                ax2.plot(dims, rates, 's-', label=f'k={k}', linewidth=2)
+        # 2. 最小可行颜色数比较
+        ax2 = axes[1]
+        dims_list = []
+        min_feasible_k = []
         
-        ax2.set_xlabel('Dimension')
-        ax2.set_ylabel('Violation Rate (%)')
-        ax2.set_title('Violation Rate vs Dimension for Fixed k')
-        ax2.legend()
-        ax2.grid(True, alpha=0.3)
-        
-        # 3. 训练曲线示例
-        ax3 = axes[1, 0]
-        if self.dims and self.colors_per_dim[self.dims[0]]:
-            example_dim = self.dims[0]
-            example_k = self.colors_per_dim[example_dim][-1]  # 取最大的k
-            
-            if example_k in self.results[example_dim]:
-                history = self.results[example_dim][example_k]['history']
-                epochs = [h['epoch'] for h in history]
-                losses = [h['train']['total_loss'] for h in history]
-                
-                ax3.plot(epochs, losses, 'b-', linewidth=2)
-                ax3.set_xlabel('Epoch')
-                ax3.set_ylabel('Training Loss')
-                ax3.set_title(f'Training Curve: {example_dim}D, k={example_k}')
-                ax3.grid(True, alpha=0.3)
-        
-        # 4. 颜色数下界估计
-        ax4 = axes[1, 1]
-        for dim in self.dims:
-            k_values = sorted(self.results[dim].keys())
-            feasible = []
-            
-            for k in k_values:
-                violation_rate = self.results[dim][k]['final_violation_rate']
-                # 如果冲突率小于阈值，认为可行
-                if violation_rate < 1.0:  # 1%阈值
-                    feasible.append(k)
+        for dim in sorted(self.results.keys()):
+            dim_results = self.results[dim]
+            feasible = [k for k, res in dim_results.items() 
+                       if res['final_violation_rate'] < 1.0]
             
             if feasible:
-                estimated_lower_bound = min(feasible) if feasible else None
-                ax4.bar(dim, estimated_lower_bound if estimated_lower_bound else 0, 
-                       label=f'{dim}D est: {estimated_lower_bound}')
+                dims_list.append(dim)
+                min_feasible_k.append(min(feasible))
+            else:
+                # 如果没有可行的，记录当前测试的最大值+1作为下界估计
+                dims_list.append(dim)
+                min_feasible_k.append(max(dim_results.keys()) + 1) # 这是一个非常粗略的估计用于绘图
         
-        ax4.set_xlabel('Dimension')
-        ax4.set_ylabel('Estimated Lower Bound')
-        ax4.set_title('Estimated Chromatic Number Lower Bound')
-        ax4.legend()
-        ax4.grid(True, alpha=0.3)
+        if dims_list:
+            bars = ax2.bar(dims_list, min_feasible_k, color='purple', alpha=0.6)
+            ax2.set_xlabel('Dimension')
+            ax2.set_ylabel('Estimated Chromatic Number (Upper Bound)')
+            ax2.set_title('Chromatic Number Bounds by Dimension')
+            ax2.set_xticks(dims_list)
+            
+            # 在柱状图上标记数值
+            for bar in bars:
+                height = bar.get_height()
+                ax2.text(bar.get_x() + bar.get_width()/2., height,
+                        f'{int(height)}',
+                        ha='center', va='bottom')
         
         plt.tight_layout()
-        plt.savefig('multi_dimension_comparison.png', dpi=150, bbox_inches='tight')
-        print("比较图已保存到 multi_dimension_comparison.png")
+        
+        # 保存
+        if hasattr(self.base_config, 'log_dir'):
+            full_save_path = os.path.join(self.base_config.log_dir, save_path)
+        else:
+            full_save_path = save_path
+            
+        plt.savefig(full_save_path, dpi=150, bbox_inches='tight')
+        print(f"Comparison plot saved to: {full_save_path}")
         
         return fig
+    
+
+

@@ -124,25 +124,26 @@ def run_single_experiment(dim: int, k: int, config: dict, output_dir: str):
     # 创建损失函数
     loss_weights = config['training']['loss_weights']
     loss_fn = ConstraintLoss(
-        conflict_weight=loss_weights['conflict'],
-        entropy_weight=loss_weights['entropy'],
-        uniformity_weight=loss_weights['uniformity'],
-        spectral_weight=loss_weights['spectral']
+        conflict_weight=float(loss_weights['conflict']),
+        entropy_weight=float(loss_weights['entropy']),
+        uniformity_weight=float(loss_weights['uniformity']),
+        spectral_weight=float(loss_weights['spectral'])
     )
     
     # 创建训练配置对象 (TrainingConfig)
     train_config = TrainingConfig(
-        epochs=config['training']['epochs'],
-        batch_size=config['data']['batch_size'],
-        learning_rate=config['training']['learning_rate'],
-        weight_decay=config['training']['weight_decay'],
-        gradient_clip=config['training']['gradient_clip'],
-        validation_freq=config['evaluation']['validation_freq'],
-        save_freq=config['evaluation']['save_checkpoint_freq'],
+        epochs=int(config['training']['epochs']),
+        batch_size=int(config['data']['batch_size']),
+        num_train_pairs=int(config['data'].get('num_train_pairs', 1000000)),
+        learning_rate=float(config['training']['learning_rate']),
+        weight_decay=float(config['training']['weight_decay']), # <--- 这里就是报错的源头
+        gradient_clip=float(config['training']['gradient_clip']),
+        validation_freq=int(config['evaluation']['validation_freq']),
+        save_freq=int(config['evaluation']['save_checkpoint_freq']),
         checkpoint_dir=os.path.join(output_dir, f"checkpoints_{dim}d_k{k}"),
         log_dir=os.path.join(output_dir, f"logs_{dim}d_k{k}"),
         device=config['project']['device'],
-        seed=config['project']['seed']
+        seed=int(config['project']['seed'])
     )
     
     # ---------------------------------------------------------

@@ -6,10 +6,10 @@
 import torch
 import numpy as np
 from typing import Tuple, List, Optional, Dict
-from training.trainer import HadwigerNelsonTrainer
 import heapq
 import random
-
+# 确保从 training.trainer 导入父类
+from training.trainer import HadwigerNelsonTrainer
 
 class HardExampleBank:
     """难例银行：存储和检索难以满足约束的点对"""
@@ -159,8 +159,9 @@ class HardExampleBank:
             p2_list.append(p2_np)
         
         # 转换为tensor
-        p1 = torch.from_numpy(np.stack(p1_list)).float().to(self.device)
-        p2 = torch.from_numpy(np.stack(p2_list)).float().to(self.device)
+        # 关键修改：移除 .float()，使其遵循系统默认dtype (float64)，解决优化器报错
+        p1 = torch.tensor(np.stack(p1_list), device=self.device)
+        p2 = torch.tensor(np.stack(p2_list), device=self.device)
         
         return p1, p2
     
@@ -203,8 +204,9 @@ class HardExampleBank:
             p2_list.append(p2_np)
             loss_list.append(loss)
         
-        p1 = torch.from_numpy(np.stack(p1_list)).float().to(self.device)
-        p2 = torch.from_numpy(np.stack(p2_list)).float().to(self.device)
+        # 关键修改：移除 .float()，遵循 float64
+        p1 = torch.tensor(np.stack(p1_list), device=self.device)
+        p2 = torch.tensor(np.stack(p2_list), device=self.device)
         losses = torch.tensor(loss_list, device=self.device)
         
         return p1, p2, losses
@@ -240,40 +242,6 @@ class HardExampleBank:
         self.index = 0
         self.total_added = 0
         self.total_rejected = 0
-    
-    def save(self, filepath: str):
-        """保存难例银行到文件"""
-        import pickle
-        
-        data = {
-            'examples': self.examples,
-            'heap': self.heap,
-            'index': self.index,
-            'total_added': self.total_added,
-            'total_rejected': self.total_rejected,
-            'max_size': self.max_size,
-            'min_loss_threshold': self.min_loss_threshold,
-            'priority_weight': self.priority_weight
-        }
-        
-        with open(filepath, 'wb') as f:
-            pickle.dump(data, f)
-    
-    def load(self, filepath: str):
-        """从文件加载难例银行"""
-        import pickle
-        
-        with open(filepath, 'rb') as f:
-            data = pickle.load(f)
-        
-        self.examples = data['examples']
-        self.heap = data['heap']
-        self.index = data['index']
-        self.total_added = data['total_added']
-        self.total_rejected = data['total_rejected']
-        self.max_size = data.get('max_size', self.max_size)
-        self.min_loss_threshold = data.get('min_loss_threshold', self.min_loss_threshold)
-        self.priority_weight = data.get('priority_weight', self.priority_weight)
 
 
 class AdaptiveHardExampleMiner:
@@ -332,12 +300,6 @@ class AdaptiveHardExampleMiner:
     def get_threshold(self) -> float:
         """获取当前阈值"""
         return self.threshold
-    
-    def reset(self):
-        """重置挖掘器"""
-        self.threshold = self.initial_threshold
-        self.step_count = 0
-        self.recent_losses.clear()
 
 
 class GeometricHardExampleGenerator:
@@ -350,15 +312,12 @@ class GeometricHardExampleGenerator:
     def generate_moser_spindle(self) -> Tuple[torch.Tensor, List[Tuple[int, int]]]:
         """
         生成Moser Spindle图（2D中的已知硬实例）
-        
-        Returns:
-            points: 点坐标 [7, 2]
-            edges: 边列表 [(i, j), ...]
         """
         if self.dim != 2:
-            raise ValueError("Moser spindle is only defined for 2D")
+            return torch.empty(0), []
         
         # Moser spindle的7个点
+        # 关键修改：移除 dtype=torch.float32，让其自动遵循全局 float64
         points = torch.tensor([
             [0.0, 0.0],
             [1.0, 0.0],
@@ -367,68 +326,37 @@ class GeometricHardExampleGenerator:
             [1.5, np.sqrt(3)/2],
             [1.5, -np.sqrt(3)/2],
             [2.0, 0.0]
-        ], dtype=torch.float32, device=self.device)
+        ], device=self.device)
         
         # 距离为1的边
         edges = [
-            (0, 1),  # 边长1
-            (0, 2),  # 边长1
-            (0, 3),  # 边长1
-            (1, 2),  # 边长1
-            (1, 3),  # 边长1
-            (2, 4),  # 边长1
-            (3, 5),  # 边长1
-            (4, 5),  # 边长1
-            (4, 6),  # 边长1
-            (5, 6),  # 边长1
-            (2, 6),  # 边长√3 ≈ 1.732，但在这个配置中距离为1
-            (3, 6)   # 边长√3 ≈ 1.732，但在这个配置中距离为1
+            (0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 4),
+            (3, 5), (4, 5), (4, 6), (5, 6), (2, 6), (3, 6)
         ]
-        
-        # 验证距离（调试用）
-        for i, j in edges:
-            dist = torch.norm(points[i] - points[j])
-            # 注意：在这个配置中，有些边不是精确的距离1
-            # 但这是Moser spindle的标准构造
-        
         return points, edges
     
     def generate_golomb_graph(self) -> Tuple[torch.Tensor, List[Tuple[int, int]]]:
         """
-        生成Golomb图（另一个已知的硬实例）
-        
-        Returns:
-            points: 点坐标
-            edges: 边列表
+        生成Golomb图
         """
-        # Golomb图有10个点，是单位距离图中的已知硬实例
-        # 这里提供一个简化的构造
-        
-        # 使用复数表示（方便旋转）
         import cmath
-        
         points_complex = []
-        
-        # 基础点
-        base_points = [0, 1, 1j]  # 0, 1, i
-        
-        # 添加旋转得到的点
+        base_points = [0, 1, 1j]
         for point in base_points:
             for angle in [0, 90, 180, 270]:
                 rad = np.deg2rad(angle)
                 rotated = point * cmath.exp(1j * rad)
                 points_complex.append(rotated)
         
-        # 去重并转换为实数坐标
         unique_points = []
         for p in points_complex:
             coord = (round(p.real, 6), round(p.imag, 6))
             if coord not in unique_points:
                 unique_points.append(coord)
         
-        points = torch.tensor(unique_points, dtype=torch.float32, device=self.device)
+        # 关键修改：移除 dtype=torch.float32
+        points = torch.tensor(unique_points, device=self.device)
         
-        # 找出距离为1的边
         edges = []
         n = len(points)
         for i in range(n):
@@ -438,81 +366,6 @@ class GeometricHardExampleGenerator:
                     edges.append((i, j))
         
         return points, edges
-    
-    def generate_clique(self, n: int = 5) -> torch.Tensor:
-        """
-        生成近似团（所有点对距离都接近1）
-        
-        Args:
-            n: 点数
-            
-        Returns:
-            points: 点坐标 [n, dim]
-        """
-        # 使用优化方法寻找这样的配置
-        points = torch.randn(n, self.dim, device=self.device, requires_grad=True)
-        optimizer = torch.optim.Adam([points], lr=0.01)
-        
-        for _ in range(500):
-            optimizer.zero_grad()
-            
-            # 计算所有点对距离
-            distances = torch.cdist(points, points)
-            
-            # 目标：所有距离接近1（除了对角线）
-            mask = 1 - torch.eye(n, device=self.device)
-            target_distances = torch.ones_like(distances) * mask
-            
-            loss = torch.mean((distances * mask - target_distances) ** 2)
-            
-            loss.backward()
-            optimizer.step()
-            
-            if loss.item() < 0.01:
-                break
-        
-        return points.detach()
-    
-    def generate_regular_simplex(self, n: int = None) -> torch.Tensor:
-        """
-        生成正则单纯形点集（所有点对距离相等）
-        
-        Args:
-            n: 点数（最多dim+1）
-            
-        Returns:
-            points: 点坐标
-        """
-        if n is None:
-            n = self.dim + 1
-        
-        if n > self.dim + 1:
-            raise ValueError(f"In {self.dim}D space, regular simplex can have at most {self.dim+1} points")
-        
-        # 生成正则单纯形的顶点
-        points = torch.zeros(n, self.dim, device=self.device)
-        
-        # 第一个点在原点
-        # 第二个点在x轴上
-        if n > 1:
-            points[1, 0] = 1.0
-        
-        # 后续点
-        for i in range(2, n):
-            # 第i个点的坐标
-            for j in range(i):
-                points[i, j] = 0.5
-            
-            # 调整使得与前面所有点的距离为1
-            # 这里使用一个简化方法
-            points[i, i-1] = np.sqrt(1.0 - np.sum(points[i, :i-1]**2))
-        
-        # 归一化使得所有点对距离为1
-        if n >= 2:
-            actual_distance = torch.norm(points[0] - points[1])
-            points = points / actual_distance
-        
-        return points
 
 
 class HardExampleTrainer(HadwigerNelsonTrainer):
@@ -525,7 +378,7 @@ class HardExampleTrainer(HadwigerNelsonTrainer):
                  model,
                  data_generator,
                  loss_fn,
-                 config,  # 现在支持直接传入 config
+                 config, 
                  hard_example_bank=None,
                  mining_frequency: int = 10,
                  hard_example_ratio: float = 0.3,
@@ -540,8 +393,6 @@ class HardExampleTrainer(HadwigerNelsonTrainer):
         else:
             self.hard_example_bank = hard_example_bank
             
-        # 从配置或参数中获取挖掘参数
-        # 优先使用传入参数，其次尝试从 config 中读取
         if hasattr(config, 'data') and isinstance(config.data, dict):
             he_config = config.data.get('hard_examples', {})
             self.mining_frequency = he_config.get('mining_iterations', mining_frequency)
@@ -550,7 +401,6 @@ class HardExampleTrainer(HadwigerNelsonTrainer):
             
         self.hard_example_ratio = hard_example_ratio
         
-        # 自适应挖掘器和几何生成器
         self.adaptive_miner = AdaptiveHardExampleMiner(device=self.device)
         self.geometric_generator = GeometricHardExampleGenerator(
             dim=data_generator.dim,
@@ -559,24 +409,26 @@ class HardExampleTrainer(HadwigerNelsonTrainer):
         
         self.step_count = 0
 
-    def train_epoch(self):
+    def train_epoch(self) -> Dict[str, float]:
         """
         重写父类的 train_epoch 以注入难例挖掘逻辑
         """
         self.model.train()
         
-        # 计算温度退火 (同之前建议的修正)
-        progress = self.current_epoch / self.config.epochs
-        if progress < 0.5:
-            temperature = 2.0 - (1.9 * (progress / 0.5))
-        else:
-            temperature = 0.1
+        # 计算温度退火 (同 trainer.py 中的逻辑)
+        # 注意：这里我们使用 self.current_epoch 和 self.config.epochs
+        if hasattr(self.config, 'anneal_epochs'):
+            import math
+            progress = min(1.0, self.current_epoch / self.config.anneal_epochs)
+            # 更新 loss_fn 的 entropy weight
+            if hasattr(self.loss_fn, 'set_entropy_weight'):
+                entropy_weight = self.config.min_entropy_weight + 0.5 * (self.config.max_entropy_weight - self.config.min_entropy_weight) * (1 - math.cos(math.pi * progress))
+                self.loss_fn.set_entropy_weight(entropy_weight)
             
         epoch_loss = 0
         loss_stats = {}
         
-        # 计算迭代次数
-        num_batches = (self.config.num_train_pairs + self.config.batch_size - 1) // self.config.batch_size
+        num_batches = max(1, (self.config.num_train_pairs + self.config.batch_size - 1) // self.config.batch_size)
         
         for batch_idx in range(num_batches):
             self.step_count += 1
@@ -584,6 +436,8 @@ class HardExampleTrainer(HadwigerNelsonTrainer):
             # --- 难例挖掘数据混合逻辑 ---
             use_hard_examples = (self.step_count % self.mining_frequency == 0)
             batch_size = self.config.batch_size
+            
+            p1, p2 = None, None
             
             if use_hard_examples and self.hard_example_bank.analyze()["size"] > batch_size // 10:
                 # 使用部分难例
@@ -595,8 +449,7 @@ class HardExampleTrainer(HadwigerNelsonTrainer):
                     num_hard, strategy="priority"
                 )
                 
-                # 生成随机样本 (使用混合链式生成)
-                # 注意：假设 generator 已经修补了 chain generation
+                # 生成随机样本
                 p1_random, p2_random = self.data_generator.get_batch()
                 # 截取需要的数量
                 if p1_random.shape[0] > num_random:
@@ -615,25 +468,20 @@ class HardExampleTrainer(HadwigerNelsonTrainer):
             
             p1, p2 = p1.to(self.device), p2.to(self.device)
             
-            # --- 前向传播与挖掘 ---
-            # 1. 前向传播
-            out1 = self.model(p1, temperature=temperature)
-            out2 = self.model(p2, temperature=temperature)
+            # --- 前向传播 ---
+            out1 = self.model(p1)
+            out2 = self.model(p2)
             
-            # 2. 计算损失
+            # 计算损失
             total_loss, batch_loss_dict = self.loss_fn(out1, out2)
             
-            # 3. 在线难例挖掘 (Online Mining)
-            # 即使当前batch主要是随机生成的，我们也检查其中是否有新的难例
+            # --- 在线难例挖掘 (Online Mining) ---
             with torch.no_grad():
                 # 计算逐点冲突程度 (dot product)
                 conflict = torch.sum(out1 * out2, dim=1)
                 
                 # 判断是否为难例
-                hard_mask = torch.tensor([
-                    self.adaptive_miner.should_keep_example(c.item())
-                    for c in conflict
-                ], device=self.device)
+                hard_mask = conflict > self.adaptive_miner.get_threshold()
                 
                 if hard_mask.any():
                     # 将发现的新难例存入银行
@@ -649,13 +497,24 @@ class HardExampleTrainer(HadwigerNelsonTrainer):
             
             if self.config.gradient_clip > 0:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.gradient_clip)
-                
-            self.optimizer.step()
+            
+            # --- 优化步骤 (适配模拟退火优化器) ---
+            if self.config.use_simulated_annealing:
+                # 尝试传递 p1, p2 给优化器 (如果是 _SAOptimizerWrapper)
+                try:
+                    self.optimizer.step(p1, p2)
+                except TypeError:
+                    # 如果不是包装器或不支持参数
+                    self.optimizer.step()
+            else:
+                self.optimizer.step()
             
             # 记录统计
             epoch_loss += total_loss.item()
             for k, v in batch_loss_dict.items():
                 loss_stats[k] = loss_stats.get(k, 0.0) + v.item() if isinstance(v, torch.Tensor) else v
+
+        self.scheduler.step()
 
         # 平均统计数据
         avg_loss = epoch_loss / num_batches
@@ -666,24 +525,34 @@ class HardExampleTrainer(HadwigerNelsonTrainer):
         bank_stats = self.hard_example_bank.analyze()
         avg_stats['bank_size'] = bank_stats['size']
         avg_stats['bank_max_loss'] = bank_stats['max_loss']
+        avg_stats['learning_rate'] = self.optimizer.param_groups[0]['lr']
         
         return avg_stats
 
-    # 保留 add_geometric_hard_examples 等特有方法
     def add_geometric_hard_examples(self):
         """添加几何难例到银行"""
-        # ... (保持原有代码不变) ...
-        super().add_geometric_hard_examples() # 如果原代码是独立的，这里不需要super，直接拷贝原逻辑即可
-        # (原逻辑拷贝过来)
         try:
+            # 生成 Moser Spindle
             points, edges = self.geometric_generator.generate_moser_spindle()
-            p1_list = [points[i].cpu().numpy() for i, j in edges]
-            p2_list = [points[j].cpu().numpy() for i, j in edges]
+            
+            # 将边转换为点对
+            p1_list = []
+            p2_list = []
+            
+            for i, j in edges:
+                p1_list.append(points[i].cpu().numpy())
+                p2_list.append(points[j].cpu().numpy())
+            
             if p1_list:
-                p1 = torch.tensor(np.array(p1_list), device=self.device)
-                p2 = torch.tensor(np.array(p2_list), device=self.device)
+                # 确保使用默认dtype (float64)
+                p1 = torch.tensor(np.stack(p1_list), device=self.device)
+                p2 = torch.tensor(np.stack(p2_list), device=self.device)
+                
+                # 计算损失（给予较高初始损失，确保被选中）
                 losses = torch.ones(len(p1_list), device=self.device) * 0.5
+                
                 self.hard_example_bank.add_batch(p1, p2, losses)
                 print(f"Added {len(p1_list)} Moser Spindle edges to hard example bank")
+        
         except Exception as e:
             print(f"Failed to add geometric hard examples: {e}")

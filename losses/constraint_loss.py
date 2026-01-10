@@ -20,7 +20,10 @@ class ConstraintLoss(nn.Module):
         self.uniformity_weight = uniformity_weight
         self.spectral_weight = spectral_weight
         self.temperature = temperature
-    
+        
+    def set_entropy_weight(self, new_weight):
+        self.entropy_weight = new_weight
+        
     def forward(self, 
                 out1: torch.Tensor, 
                 out2: torch.Tensor,

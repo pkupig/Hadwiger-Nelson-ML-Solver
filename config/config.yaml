@@ -47,10 +47,10 @@ training:
   
   # Loss weights
   loss_weights:
-    conflict: 1.0
-    entropy: 0.1
-    uniformity: 0.01
-    spectral: 0.05
+    conflict: 10.0
+    entropy: 0.05
+    uniformity: 0.0
+    spectral: 0.01
     
   # Scheduler
   scheduler:

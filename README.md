@@ -1,235 +1,131 @@
-**Hadwiger-Nelson ML Solver**
+<div align="center">Hadwiger-Nelson ML Solver</div>
 
-项目结构：
-```text
-hadwiger_nelson_ml/
-├── 📂 config/                    # 配置管理模块
-│   ├── __init__.py              # Python包初始化文件
-│   └── config.yaml              # 📌 主配置文件：所有实验参数集中管理
-│                                 #     包含训练、模型、数据、评估等所有配置
-│                                 #     支持YAML格式，便于参数调优和实验复现
-│
-├── 📂 data/                     # 数据生成与管理模块
-│   ├── __init__.py              # Python包初始化文件
-│   ├── generator.py             # 📌 核心数据生成器：生成距离为1的点对
-│   │   - PointPairGenerator: 生成2D/3D/4D单位距离点对
-│   │   - 支持均匀采样、随机距离、网格采样等多种策略
-│   │   - 自动验证距离约束，确保数学正确性
-│   │   - 生成Moser Spindle等已知硬实例
-│   │
-│   └── hard_examples.py         # 📌 难例挖掘系统：主动学习最难约束
-│       - HardExampleBank: 难例存储和优先级采样
-│       - AdaptiveHardExampleMiner: 自适应阈值调整
-│       - GeometricHardExampleGenerator: 几何硬实例生成
-│       - HardExampleTrainer: 集成难例挖掘的训练器
-│
-├── 📂 models/                   # 神经网络模型模块
-│   ├── __init__.py              # 📌 模型包导出：统一导出所有模型类
-│   │   - 导出MLP、残差、注意力、图网络等所有模型
-│   │
-│   ├── mlp_mapper.py           # 📌 基础MLP模型：多层感知机颜色映射器
-│   │   - MLPColorMapper: 标准MLP架构，坐标→颜色概率
-│   │   - 支持批归一化、Dropout、多种激活函数
-│   │   - 可配置隐藏层维度，适应不同复杂度问题
-│   │
-│   ├── residual_net.py         # 📌 残差网络模型：带跳跃连接的深度网络
-│   │   - ResidualColorNet: 残差块堆叠，缓解梯度消失
-│   │   - 三种残差块：标准、瓶颈、密集
-│   │   - ResNetWithFourier: 结合傅里叶特征的残差网络
-│   │   - WideResidualColorNet: 宽度优先的残差网络
-│   │
-│   ├── fourier_features.py     # 📌 傅里叶特征编码：高频信息捕捉
-│   │   - FourierFeatures: 标准傅里叶特征映射
-│   │   - PositionalEncoding: Transformer式位置编码
-│   │   - LearnableFourierFeatures: 可学习频率矩阵
-│   │   - MultiScaleFourierFeatures: 多尺度傅里叶特征
-│   │   - FourierMLP: 集成傅里叶特征的完整MLP
-│   │
-│   ├── attention_net.py        # 📌 注意力机制模型：空间关系建模
-│   │   - AttentionColorMapper: 多头自注意力颜色映射器
-│   │   - SpatialAttention: 空间注意力模块
-│   │   - MultiHeadSelfAttention: 标准多头注意力
-│   │   - LocalAttentionColorMapper: 局部邻域注意力
-│   │
-│   └── graph_net.py            # 📌 图神经网络模型：图结构处理
-│       - GraphColorNet: GNN颜色映射器
-│       - GeometricMessagePassing: 几何感知消息传递
-│       - GeometricGraphConv: 几何图卷积层
-│       - DynamicGraphBuilder: 动态图构建器
-│       - GraphBasedColorMapper: 端到端图神经网络
-│
-├── 📂 losses/                  # 损失函数模块
-│   ├── __init__.py              # Python包初始化文件
-│   ├── constraint_loss.py       # 📌 核心约束损失：Hadwiger-Nelson问题专用
-│   │   - ConstraintLoss: 冲突损失+熵损失+均匀性损失
-│   │   - AdaptiveConstraintLoss: 自适应权重约束损失
-│   │   - GeometricLoss: 几何感知损失（距离加权）
-│   │   - 核心思想：将离散染色问题转化为连续优化
-│   │
-│   ├── spectral_loss.py         # 📌 谱损失：图拉普拉斯正则化
-│   │   - SpectralLoss: 基于图拉普拉斯的平滑度正则化
-│   │   - GraphCutLoss: 图割损失，鼓励颜色在割集平滑过渡
-│   │   - LaplacianEigenLoss: 拉普拉斯特征对齐损失
-│   │   - CombinedSpectralLoss: 组合谱损失
-│   │   - 数学基础：流形学习、谱图理论
-│   │
-│   └── topological_loss.py      # 📌 拓扑损失：保持拓扑性质
-│       - TopologicalLoss: 持续性同调损失
-│       - ContinuityLoss: 空间连续性损失
-│       - 鼓励颜色分配保持拓扑结构稳定性
-│       - 基于拓扑数据分析(TDA)理论
-│
-├── 📂 training/                # 训练相关模块
-│   ├── __init__.py              # Python包初始化文件
-│   ├── trainer.py               # 📌 核心训练器：完整训练流程
-│   │   - HadwigerNelsonTrainer: 主训练器类
-│   │   - MultiDimensionTrainer: 多维度对比训练器
-│   │   - TrainingConfig: 训练配置数据类
-│   │   - 支持检查点保存、学习率调度、梯度裁剪
-│   │
-│   ├── optimizer.py            # 📌 优化器配置：多种优化算法
-│   │   - create_optimizer: 工厂函数创建优化器
-│   │   - LookaheadOptimizer: Lookahead优化器包装
-│   │   - RAdam: Rectified Adam优化器
-│   │   - 支持Adam、AdamW、SGD、RMSprop等
-│   │
-│   └── scheduler.py            # 📌 学习率调度器：动态学习率调整
-│       - create_scheduler: 工厂函数创建调度器
-│       - CosineAnnealingWithWarmup: 带热身的余弦退火
-│       - LinearWarmupCosineAnnealing: 线性热身+余弦退火
-│       - 支持多种调度策略：余弦退火、StepLR、OneCycleLR等
-│
-├── 📂 evaluation/              # 评估与可视化模块
-│   ├── __init__.py              # Python包初始化文件
-│   ├── validator.py             # 📌 验证器：模型性能评估
-│   │   - HadwigerNelsonValidator: 主验证器类
-│   │   - 计算冲突率、颜色分布、空间统计
-│   │   - 查找违反约束的点对
-│   │   - 分析颜色区域的几何性质
-│   │
-│   ├── visualizer.py           # 📌 可视化工具：多种维度可视化
-│   │   - HadwigerNelsonVisualizer: 主可视化器
-│   │   - 2D染色方案可视化（matplotlib）
-│   │   - 3D染色方案可视化（matplotlib 3D）
-│   │   - 4D交互式可视化（plotly，保存为HTML）
-│   │   - 训练历史曲线可视化
-│   │   - ResultAnalyzer: 结果分析器，生成摘要
-│   │
-│   └── metrics.py              # 📌 评估指标：综合性能评估
-│       - HadwigerNelsonMetrics: 综合指标计算
-│       - 冲突指标、颜色指标、空间指标、图指标
-│       - 计算总体评分，综合多个维度评估模型
-│
-├── 📂 experiments/             # 实验脚本模块
-│   ├── __init__.py              # Python包初始化文件
-│   ├── experiment_2d.py         # 📌 2D实验：验证已知结果χ(ℝ²)∈[4,7]
-│   │   - run_2d_experiments: 2D颜色数扫描实验
-│   │   - 验证ML方法能复现数学已知结果
-│   │   - 提供与理论结果的对比分析
-│   │
-│   ├── experiment_3d.py         # 📌 3D实验：探索三维空间染色数
-│   │   - run_3d_experiment: 单次3D实验
-│   │   - run_3d_color_sweep: 3D颜色数扫描
-│   │   - analyze_3d_results: 3D结果分析
-│   │   - 估计χ(ℝ³)的下界
-│   │
-│   └── experiment_4d.py         # 📌 4D实验：探索四维空间染色数
-│       - run_4d_experiment: 单次4D实验
-│       - run_4d_color_sweep: 4D颜色数扫描
-│       - analyze_4d_results: 4D结果分析
-│       - compare_dimensions: 多维度比较
-│       - 估计χ(ℝ⁴)的下界
-│
-├── 📂 utils/                   # 工具函数模块
-│   ├── __init__.py              # Python包初始化文件
-│   ├── geometry.py              # 📌 几何计算工具
-│   │   - compute_unit_sphere_points: 单位超球面采样
-│   │   - find_unit_distance_pairs: 查找距离为1的点对
-│   │   - compute_chromatic_number_lower_bound: 计算染色数下界
-│   │   - generate_regular_simplex: 生成正则单纯形
-│   │
-│   └── logging.py              # 📌 日志记录工具
-│       - ExperimentLogger: 实验日志记录器
-│       - TensorBoardLogger: TensorBoard日志包装器
-│       - ProgressLogger: 进度条记录器
-│       - setup_logging: 日志设置函数
-│       - 支持控制台和文件双重日志，便于调试和追踪
-│
-├── 📄 setup_project.py          # 📌 项目初始化脚本
-│   - 首次运行时执行，创建完整目录结构
-│   - 生成配置文件和requirements.txt
-│   - 设置项目环境，确保一致性
-│
-├── 📄 run_experiments.py        # 📌 批量实验脚本
-│   - 预定义一系列对比实验
-│   - 自动运行2D、3D、4D多组实验
-│   - 简化重复实验流程，提高研究效率
-│
-├── 📄 main.py                   # 📌 主程序入口：命令行接口
-│   - 命令行参数解析
-│   - 配置加载和环境设置
-│   - 实验调度和结果汇总
-│   - 支持多种运行模式：单实验、批量、比较
-│
-├── 📄 requirements.txt          # 📌 依赖包列表
-│   - 核心依赖：torch, numpy, matplotlib
-│   - 可选高级依赖：plotly, torch-geometric, gudhi
-│   - 确保环境可复现性
-│
-└── 📄 README.md                 # 📌 项目说明文档
-    - 项目概述和问题描述
-    - 安装和使用指南
-    - 实验说明和结果示例
-    - 参考文献和致谢
-```
+[![PyTorch](https://img.shields.io/badge/PyTorch-EE4C2C?style=for-the-badge&logo=pytorch&logoColor=white)](https://pytorch.org/)
+[![Python](https://img.shields.io/badge/Python-3.8+-blue?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
+[![License](https://img.shields.io/badge/License-MIT-green.svg?style=for-the-badge)](LICENSE)
 
-运行示例：
+> 使用深度学习探索欧几里得空间的染色数（The Chromatic Number of the Plane）。
+
+## 问题背景
+
+**Hadwiger-Nelson 问题**询问：在平面上，如果任意两个距离为 1 的点必须染上不同的颜色，最少需要几种颜色？
+
+目前数学界的已知边界为：
+$$4 \le \chi(\mathbb{R}^2) \le 7$$
+*(注：De Grey 在 2018 年证明了下界至少为 5，但该项目旨在验证 ML 是否能自动发现这些反例结构)*
+
+本项目通过构建神经网络 $f: \mathbb{R}^n \rightarrow \Delta^{k-1}$，将离散的染色问题转化为连续优化问题，尝试在高维空间（2D, 3D, 4D）寻找无冲突的染色方案，从而逼近色数的下界。
+
+## 核心特性
+
+本项目不仅仅是一个简单的 MLP，还集成了针对几何问题的深度优化策略：
+
+* **多种模型架构**：
+    * **MLP Mapper**: 基础坐标映射网络。
+    * **Residual Net**: 深层残差网络，处理复杂边界。
+    * **Graph GNN**: 基于图神经网络的拓扑结构学习。
+* **傅里叶特征映射 (Fourier Features)**：
+    * 利用 Gaussian Fourier Mapping 解决神经网络的 "Spectral Bias" 问题，使其能学习高频的颜色突变边界。
+* **难例挖掘 (Hard Example Mining)**：
+    * **主动学习**：在训练过程中自动识别高冲突区域。
+    * **几何硬例**：内置 Moser Spindle、Golomb Graph 等经典数学反例结构，用于对抗训练。
+* **复合损失函数 (Constraint Loss)**：
+    * $L_{total} = \lambda_1 L_{conflict} + \lambda_2 L_{entropy} + \lambda_3 L_{smoothness}$
+    * 结合了冲突惩罚、熵正则化（迫使输出确定性颜色）和谱平滑损失。
+
+## 方法细节
+
+我们定义神经网络 $f_\theta(x)$ 输出点 $x$ 属于 $k$ 种颜色的概率分布 $P$。损失函数设计如下：
+
+1. 冲突损失 (Conflict Loss)：对于距离 $\|x_i - x_j\| = 1$ 的点对，惩罚其颜色分布的相似度（点积）。
+
+$$ L_{conflict} = \frac{1}{N} \sum_{(i,j)} \langle f_\theta(x_i), f_\theta(x_j) \rangle $$
+
+2. 熵损失 (Entropy Loss)：为了得到“硬染色”（非黑即白），我们最小化预测分布的熵。
+
+$$ L_{entropy} = - \frac{1}{N} \sum_i \sum_c p_{i,c} \log p_{i,c} $$
+
+结合 温度退火 (Temperature Annealing) 策略，在训练初期允许模糊边界，后期强迫模型做出离散决策。
+
+## 实验结果 (Results)
+
+### 2D 平面染色 (k=7)
+*(在此处插入 `results/2d_coloring_k7.png` 的图片)*
+> 模型成功找到了 2D 平面的 7 色平铺方案，形成了类似六边形的蜂窝结构。
+
+### 3D/4D 空间探索
+| 维度 | 测试颜色数 (k) | 是否可行 (Violation < 1%) | 估计下界 |
+| :--- | :--- | :--- | :--- |
+| 2D | 3, 4, 5, 6, 7 | k=4 可行 | $\chi \ge 4$ |
+| 3D | 5, 6, 7, ..., 10 | ... | ... |
+| 4D | ... | ... | ... |
+## 快速开始 (Quick Start)
+
+### 1. 环境安装
+
+建议使用 Conda 创建虚拟环境：
 
 ```bash
-# 1. 快速开始
-python main.py --dims 2 3 4 --quick-test --visualize
+conda create -n graph_color python=3.8
+conda activate graph_color
+pip install -r requirements.txt
+```
 
-# 2. 完整实验
-python main.py --dims 2 3 4 --epochs 2000 --visualize
-# 使用高级损失函数
-python main.py --loss combined --loss-weights 1.0,0.1,0.05,0.01
-# 分别对应：冲突损失、熵损失、谱损失、拓扑损失
-# 指定模型类型
-python main.py --model mlp           # 基础MLP
-python main.py --model residual      # 残差网络
-python main.py --model attention     # 注意力模型
-python main.py --model graph         # 图神经网络
+### 2. 更多参考
 
-# 3. 单维度实验
+```bash
+# 1. 基础运行 (使用默认 config.yaml 配置)
+# 默认运行 2D, 3D, 4D 实验
+python main.py
+
+# 2. 指定维度和颜色数
+# 仅运行 2D 实验，强制测试 3, 4, 5, 6 种颜色
+python main.py --dims 2 --colors 3 4 5 6
+
+# 3. 快速测试 (通过减少 Epochs 实现)
+# 验证代码是否跑得通，而不是为了得到结果
+python main.py --dims 2 --epochs 10 --batch-size 1024
+
+# 4. 指定自定义配置文件
+# 这是修改模型、Loss、傅里叶参数的正确方式！
+# 你需要先复制一份 config.yaml 改名为 config_residual.yaml 等
+python main.py --config config/config_custom.yaml
+
+# 5. 运行单维度独立脚本
 python experiments/experiment_2d.py
 python experiments/experiment_3d.py
 python experiments/experiment_4d.py
-
-# 4. 模型比较
-python experiments/model_comparison.py
-
-# 5. 批量运行所有实验
-python run_experiments.py
-
-# 6. 启用难例挖掘的训练
-python main.py --hard-examples --mining-frequency 10 --hard-ratio 0.3
-
-# 7. 使用残差网络
-python main.py --model residual --hidden-dims 128 256 256 128
-
-# 8. 使用傅里叶特征
-python main.py --use-fourier --fourier-features 512 --fourier-sigma 5.0
-
-# 9. 使用谱损失
-python main.py --loss spectral --lambda-spec 0.05 --spectral-mode smoothness
-
-# 10. 完整的高级训练
-python main.py \
-  --model residual \
-  --use-fourier \
-  --hard-examples \
-  --loss combined \
-  --loss-weights "1.0,0.1,0.05,0.01" \
-  --visualize
 ```
 
+## 项目结构：
+
+```text
+hadwiger_nelson_ml/
+├── config/               # 实验参数配置 (YAML)
+├── data/                 # 数据流管线
+│   ├── generator.py         # 核心生成器 (Unit Distance Pairs)
+│   └── hard_examples.py     # 难例挖掘与对抗样本 (Active Learning)
+├── models/               # 神经网络架构
+│   ├── mlp_mapper.py        # 基础 MLP 映射器
+│   ├── fourier_features.py  # 傅里叶特征编码 (解决 Spectral Bias)
+│   ├── graph_net.py         # 图神经网络 (GNN)
+│   └── ...                  # ResNet, Attention 等变体
+├── losses/               # 损失函数定义
+│   ├── constraint_loss.py   # 染色冲突与熵损失 (核心 Loss)
+│   ├── spectral_loss.py     # 谱平滑正则化
+│   └── topological_loss.py  # 拓扑持续性损失
+├── training/             # 训练循环与优化
+│   ├── trainer.py           # 训练器 (Trainer)
+│   └── ...                  # Optimizer, Scheduler
+├── evaluation/           # 验证与可视化
+│   ├── visualizer.py        # 2D/3D/4D 染色效果绘图
+│   └── validator.py         # 冲突率验证器
+├── experiments/          # 自动化实验脚本 (2D/3D/4D)
+├── main.py               # 项目主入口
+├── requirements.txt      # 依赖环境
+└── utils等
+```
+
+## License
+
+MIT License
