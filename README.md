@@ -1,4 +1,4 @@
-<div align="center">Hadwiger-Nelson ML Solver</div>
+# Hadwiger-Nelson ML Solver
 
 [![PyTorch](https://img.shields.io/badge/PyTorch-EE4C2C?style=for-the-badge&logo=pytorch&logoColor=white)](https://pytorch.org/)
 [![Python](https://img.shields.io/badge/Python-3.8+-blue?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
@@ -8,7 +8,7 @@
 
 ## 问题背景
 
-**Hadwiger-Nelson 问题**询问：在平面上，如果任意两个距离为 1 的点必须染上不同的颜色，最少需要几种颜色？
+**Hadwiger-Nelson 问题**：在平面上，如果任意两个距离为 1 的点必须染上不同的颜色，最少需要几种颜色？
 
 目前数学界的已知边界为：
 $$4 \le \chi(\mathbb{R}^2) \le 7$$
@@ -101,7 +101,7 @@ python experiments/experiment_4d.py
 
 ```text
 hadwiger_nelson_ml/
-├── config/               # 实验参数配置 (YAML)
+├── config/               # 实验参数配置
 ├── data/                 # 数据流管线
 │   ├── generator.py         # 核心生成器 (Unit Distance Pairs)
 │   └── hard_examples.py     # 难例挖掘与对抗样本 (Active Learning)

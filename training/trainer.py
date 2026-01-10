@@ -43,15 +43,12 @@ class TrainingConfig:
     max_entropy_weight: float = 0.1
 
 
-class _SAOptimizerWrapper(optim.Optimizer):
+class _SAOptimizerWrapper:
     """
     模拟退火优化器包装器
     """
     
     def __init__(self, base_optimizer, model, loss_fn, sa_config):
-        self.param_groups = base_optimizer.param_groups
-        defaults = {key: value for key, value in base_optimizer.defaults.items()}
-        super().__init__(self.param_groups, defaults)
         self.base_optimizer = base_optimizer
         self.model = model
         self.loss_fn = loss_fn
@@ -71,15 +68,15 @@ class _SAOptimizerWrapper(optim.Optimizer):
         self.best_state = None
         self.best_loss = float('inf')
         
-        # 初始最佳状态
-        self.best_state = {k: v.clone() for k, v in model.state_dict().items()}
-    
+        # 初始最佳状态 - 确保使用float64
+        self.best_state = {k: v.clone().to(dtype=torch.float64) for k, v in model.state_dict().items()}
+        
     def _simulated_annealing_step(self, p1, p2):
         """执行一步模拟退火"""
         device = p1.device
         
-        # 保存当前状态
-        old_state = {k: v.clone() for k, v in self.model.state_dict().items()}
+        # 保存当前状态 - 确保使用float64
+        old_state = {k: v.clone().to(dtype=torch.float64) for k, v in self.model.state_dict().items()}
         
         # 计算当前损失
         with torch.no_grad():
@@ -88,11 +85,12 @@ class _SAOptimizerWrapper(optim.Optimizer):
             current_loss, _ = self.loss_fn(out1, out2)
             current_loss_val = current_loss.item()
         
-        # 随机扰动参数
+        # 随机扰动参数 - 确保噪声是float64且在正确设备上
         with torch.no_grad():
             for param in self.model.parameters():
                 if param.requires_grad:
-                    noise = torch.randn_like(param).to(device) * self.sa_perturb_std
+                    # 严格匹配参数的dtype和device
+                    noise = torch.randn_like(param) * self.sa_perturb_std
                     param.data.add_(noise)
         
         # 计算扰动后损失
@@ -112,7 +110,7 @@ class _SAOptimizerWrapper(optim.Optimizer):
             # 更新最佳状态
             if new_loss_val < self.best_loss:
                 self.best_loss = new_loss_val
-                self.best_state = {k: v.clone() for k, v in self.model.state_dict().items()}
+                self.best_state = {k: v.clone().to(dtype=torch.float64) for k, v in self.model.state_dict().items()}
         else:
             # 拒绝新状态，恢复旧状态
             self.model.load_state_dict(old_state)
@@ -124,13 +122,23 @@ class _SAOptimizerWrapper(optim.Optimizer):
     
     def step(self, p1=None, p2=None, closure=None):
         """执行一步优化"""
-        # 执行基础优化器步骤
-        self.base_optimizer.step(closure)
+        # 首先执行基础优化器步骤
+        if hasattr(self.base_optimizer, 'step'):
+            if closure is not None:
+                self.base_optimizer.step(closure)
+            else:
+                self.base_optimizer.step()
         
         # 定期执行模拟退火
         self.step_count += 1
         
         if p1 is not None and p2 is not None and self.step_count % self.sa_freq == 0:
+            # 确保输入数据是float64
+            if p1.dtype != torch.float64:
+                p1 = p1.to(dtype=torch.float64)
+            if p2.dtype != torch.float64:
+                p2 = p2.to(dtype=torch.float64)
+            
             for _ in range(self.sa_steps):
                 self._simulated_annealing_step(p1, p2)
     
@@ -154,6 +162,7 @@ class _SAOptimizerWrapper(optim.Optimizer):
         self.sa_config = state_dict.get('sa_config', {})
     
     def __getattr__(self, name):
+        # 重定向到基础优化器的属性
         return getattr(self.base_optimizer, name)
 
 
@@ -173,14 +182,17 @@ class HadwigerNelsonTrainer:
         
         # 设置设备
         self.device = torch.device(config.device if torch.cuda.is_available() else "cpu")
-        self.model = self.model.to(self.device)
         
-        # 优化器
+        # 1. 确保模型是float64并移动到设备
+        # 这里的顺序很重要：先转dtype，再转device
+        self.model = self.model.to(dtype=torch.float64).to(self.device)
+        
+        # 2. 创建优化器（必须在模型移动之后）
         self.optimizer = self._create_optimizer()
         
-        # 学习率调度器
+        # 3. 学习率调度器
         self.scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
-            self.optimizer,
+            self._get_base_optimizer(),
             T_0=100,
             T_mult=2,
             eta_min=1e-6
@@ -203,18 +215,28 @@ class HadwigerNelsonTrainer:
         if config.seed is not None:
             self._set_seed(config.seed)
     
+    def _get_base_optimizer(self):
+        """获取基础优化器（如果是包装器，则返回基础优化器）"""
+        if hasattr(self.optimizer, 'base_optimizer'):
+            return self.optimizer.base_optimizer
+        return self.optimizer
+    
     def _create_optimizer(self):
         """创建优化器"""
+        # 关键修复：设置 foreach=False 以避免 PyTorch 在 float64 下的 bug
+        # eps=1e-8 保持默认，增加数值稳定性
+        
         base_optimizer = optim.AdamW(
             self.model.parameters(),
             lr=self.config.learning_rate,
-            weight_decay=self.config.weight_decay
+            weight_decay=self.config.weight_decay,
+            eps=1e-8,
+            foreach=False  # <--- 这里的修改解决了 RuntimeError
         )
         
         if not self.config.use_simulated_annealing:
             return base_optimizer
         
-        # 如果启用模拟退火，返回包装器
         print(f"[Trainer] Enabling Simulated Annealing")
         return _SAOptimizerWrapper(
             base_optimizer=base_optimizer,
@@ -224,7 +246,7 @@ class HadwigerNelsonTrainer:
         )
     
     def _set_seed(self, seed: int):
-        """设置随机种子）"""
+        """设置随机种子"""
         torch.manual_seed(seed)
         np.random.seed(seed)
         if torch.cuda.is_available():
@@ -239,14 +261,14 @@ class HadwigerNelsonTrainer:
         epoch_conflict_losses = []
         epoch_entropy_losses = []
         
-        # 假设每个epoch处理固定数量的点对
         num_batches = max(1, 100000 // self.config.batch_size)
         
         for batch_idx in range(num_batches):
             # 获取数据
             p1, p2 = self.data_generator.get_batch()
-            p1 = p1.to(self.device)
-            p2 = p2.to(self.device)
+            # 确保数据是float64并移动到设备
+            p1 = p1.to(self.device, dtype=torch.float64)
+            p2 = p2.to(self.device, dtype=torch.float64)
             
             # 前向传播
             out1 = self.model(p1)
@@ -272,12 +294,11 @@ class HadwigerNelsonTrainer:
             else:
                 self.optimizer.step()
 
-            # 熵退火（余弦退火）
-
+            # 熵退火
             progress = min(1.0, self.current_epoch / self.config.anneal_epochs)
             entropy_weight = self.config.min_entropy_weight + 0.5 * (self.config.max_entropy_weight - self.config.min_entropy_weight) * (1 - math.cos(math.pi * progress))
-            self.loss_fn.set_entropy_weight(entropy_weight)
-
+            if hasattr(self.loss_fn, 'set_entropy_weight'):
+                self.loss_fn.set_entropy_weight(entropy_weight)
             
             # 记录损失
             epoch_losses.append(total_loss.item())
@@ -291,9 +312,7 @@ class HadwigerNelsonTrainer:
         avg_loss = np.mean(epoch_losses)
         avg_conflict = np.mean(epoch_conflict_losses)
         avg_entropy = np.mean(epoch_entropy_losses)
-        
-        # 获取当前学习率
-        current_lr = self.optimizer.param_groups[0]['lr']
+        current_lr = self._get_base_optimizer().param_groups[0]['lr']
         
         return {
             'total_loss': avg_loss,
@@ -311,33 +330,29 @@ class HadwigerNelsonTrainer:
             total_pairs = 0
             
             for _ in range(num_samples // self.config.batch_size + 1):
-                # 生成验证数据
                 p1, p2 = self.data_generator.get_batch()
-                p1 = p1.to(self.device)
-                p2 = p2.to(self.device)
+                p1 = p1.to(self.device, dtype=torch.float64)
+                p2 = p2.to(self.device, dtype=torch.float64)
                 
-                # 获取颜色分配
                 colors1 = self.model.get_color_assignment(p1)
                 colors2 = self.model.get_color_assignment(p2)
                 
-                # 统计冲突
                 violations = (colors1 == colors2).sum().item()
                 total_violations += violations
                 total_pairs += len(p1)
             
             violation_rate = total_violations / total_pairs if total_pairs > 0 else 0
             
-            # 计算验证损失
+            # 验证损失
             p1, p2 = self.data_generator.get_batch()
-            p1 = p1.to(self.device)
-            p2 = p2.to(self.device)
-            
+            p1 = p1.to(self.device, dtype=torch.float64)
+            p2 = p2.to(self.device, dtype=torch.float64)
             out1 = self.model(p1)
             out2 = self.model(p2)
             val_loss, _ = self.loss_fn(out1, out2)
         
         return {
-            'violation_rate': violation_rate * 100,  # 百分比
+            'violation_rate': violation_rate * 100,
             'validation_loss': val_loss.item()
         }
     
@@ -349,27 +364,24 @@ class HadwigerNelsonTrainer:
         print(f"开始训练 {num_epochs} 个epochs...")
         print(f"设备: {self.device}")
         print(f"模型参数量: {sum(p.numel() for p in self.model.parameters()):,}")
+        print(f"模型数据类型: {next(self.model.parameters()).dtype}")
+        print(f"优化器类型: {type(self.optimizer)}")
+        print(f"AdamW foreach模式: False") # 确认修复生效
         print("-" * 80)
         
         start_time = time.time()
-        
         start_epoch = self.current_epoch
         target_end_epoch = start_epoch + num_epochs
         
         for epoch in range(start_epoch, target_end_epoch):
             self.current_epoch = epoch + 1
-            
-            # 训练一个epoch
             train_metrics = self.train_epoch()
             
-            # 记录到TensorBoard
             for key, value in train_metrics.items():
                 self.writer.add_scalar(f'Train/{key}', value, epoch)
             
-            # 验证
             if (epoch + 1) % self.config.validation_freq == 0 or epoch == 0:
                 val_metrics = self.validate()
-                
                 for key, value in val_metrics.items():
                     self.writer.add_scalar(f'Validation/{key}', value, epoch)
                 
@@ -379,36 +391,27 @@ class HadwigerNelsonTrainer:
                       f"Val Violation: {val_metrics['violation_rate']:.2f}% | "
                       f"LR: {train_metrics['learning_rate']:.6f}")
                 
-                # 保存最佳模型
                 if val_metrics['violation_rate'] < self.best_loss:
                     self.best_loss = val_metrics['violation_rate']
                     self.save_checkpoint(f"best_model_epoch{epoch+1}.pth")
             
-            # 定期保存检查点
             if (epoch + 1) % self.config.save_freq == 0:
                 self.save_checkpoint(f"checkpoint_epoch{epoch+1}.pth")
             
-            # 保存训练历史
             self.train_history.append({
                 'epoch': epoch + 1,
                 'train': train_metrics,
                 'validation': val_metrics if (epoch + 1) % self.config.validation_freq == 0 else None
             })
         
-        # 训练完成
         total_time = time.time() - start_time
         print(f"\n训练完成！总时间: {total_time:.2f}秒")
         print(f"最佳验证冲突率: {self.best_loss:.2f}%")
-        
-        # 保存最终模型
         self.save_checkpoint("final_model.pth")
-        
         return self.train_history
     
     def save_checkpoint(self, filename: str):
-        """保存检查点"""
         checkpoint_path = os.path.join(self.config.checkpoint_dir, filename)
-        
         checkpoint = {
             'epoch': self.current_epoch,
             'model_state_dict': self.model.state_dict(),
@@ -418,56 +421,31 @@ class HadwigerNelsonTrainer:
             'train_history': self.train_history,
             'config': self.config
         }
-        
         torch.save(checkpoint, checkpoint_path)
-        print(f"检查点保存到: {checkpoint_path}")
     
     def load_checkpoint(self, checkpoint_path: str):
-        """加载检查点"""
         if not os.path.exists(checkpoint_path):
             raise FileNotFoundError(f"检查点不存在: {checkpoint_path}")
-        
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
-        
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-        
         self.current_epoch = checkpoint['epoch']
         self.best_loss = checkpoint['best_loss']
         self.train_history = checkpoint.get('train_history', [])
-        
         print(f"从 epoch {self.current_epoch} 加载检查点")
-        print(f"最佳损失: {self.best_loss:.4f}")
 
 class MultiDimensionTrainer:
-    """
-    多维度训练管理器
-    主要用于协调多个维度的实验并进行结果比较
-    """
-    
-    def __init__(self, 
-                 dims: List[int],
-                 colors_per_dim: Dict[int, List[int]],
-                 base_config: TrainingConfig):
-        
+    """多维度训练管理器"""
+    def __init__(self, dims: List[int], colors_per_dim: Dict[int, List[int]], base_config: TrainingConfig):
         self.dims = dims
         self.colors_per_dim = colors_per_dim
         self.base_config = base_config
-        self.results = {}  # 存储所有结果
+        self.results = {} 
     
     def plot_comparison(self, save_path: str = "dimension_comparison.png") -> plt.Figure:
-        """
-        绘制不同维度的对比图
-        """
-        if not self.results:
-            print("No results to plot.")
-            return None
-            
-        # 准备数据
+        if not self.results: return None
         fig, axes = plt.subplots(1, 2, figsize=(15, 6))
-        
-        # 1. 冲突率比较
         ax1 = axes[0]
         colors = ['b', 'g', 'r', 'c', 'm']
         markers = ['o', 's', '^', 'D', 'v']
@@ -476,12 +454,9 @@ class MultiDimensionTrainer:
             dim_results = self.results[dim]
             k_values = sorted(dim_results.keys())
             violation_rates = [dim_results[k]['final_violation_rate'] for k in k_values]
-            
             color = colors[idx % len(colors)]
             marker = markers[idx % len(markers)]
-            
-            ax1.plot(k_values, violation_rates, f'{color}{marker}-', 
-                    linewidth=2, markersize=8, label=f'{dim}D')
+            ax1.plot(k_values, violation_rates, f'{color}{marker}-', linewidth=2, markersize=8, label=f'{dim}D')
             
         ax1.axhline(y=1.0, color='k', linestyle='--', alpha=0.5, label='1% Threshold')
         ax1.set_xlabel('Number of colors (k)')
@@ -490,23 +465,18 @@ class MultiDimensionTrainer:
         ax1.legend()
         ax1.grid(True, alpha=0.3)
         
-        # 2. 最小可行颜色数比较
         ax2 = axes[1]
         dims_list = []
         min_feasible_k = []
-        
         for dim in sorted(self.results.keys()):
             dim_results = self.results[dim]
-            feasible = [k for k, res in dim_results.items() 
-                       if res['final_violation_rate'] < 1.0]
-            
+            feasible = [k for k, res in dim_results.items() if res['final_violation_rate'] < 1.0]
             if feasible:
                 dims_list.append(dim)
                 min_feasible_k.append(min(feasible))
             else:
-                # 如果没有可行的，记录当前测试的最大值+1作为下界估计
                 dims_list.append(dim)
-                min_feasible_k.append(max(dim_results.keys()) + 1) # 这是一个非常粗略的估计用于绘图
+                min_feasible_k.append(max(dim_results.keys()) + 1)
         
         if dims_list:
             bars = ax2.bar(dims_list, min_feasible_k, color='purple', alpha=0.6)
@@ -514,26 +484,15 @@ class MultiDimensionTrainer:
             ax2.set_ylabel('Estimated Chromatic Number (Upper Bound)')
             ax2.set_title('Chromatic Number Bounds by Dimension')
             ax2.set_xticks(dims_list)
-            
-            # 在柱状图上标记数值
             for bar in bars:
                 height = bar.get_height()
-                ax2.text(bar.get_x() + bar.get_width()/2., height,
-                        f'{int(height)}',
-                        ha='center', va='bottom')
+                ax2.text(bar.get_x() + bar.get_width()/2., height, f'{int(height)}', ha='center', va='bottom')
         
         plt.tight_layout()
-        
-        # 保存
         if hasattr(self.base_config, 'log_dir'):
             full_save_path = os.path.join(self.base_config.log_dir, save_path)
         else:
             full_save_path = save_path
-            
         plt.savefig(full_save_path, dpi=150, bbox_inches='tight')
         print(f"Comparison plot saved to: {full_save_path}")
-        
         return fig
-    
-
-

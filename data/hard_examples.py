@@ -38,11 +38,6 @@ class HardExampleBank:
                   losses: torch.Tensor):
         """
         添加一批点到难例银行
-        
-        Args:
-            p1: 第一个点集 [batch_size, dim]
-            p2: 第二个点集 [batch_size, dim]
-            losses: 每个点对的损失 [batch_size]
         """
         # 转换为CPU numpy以存储
         p1_np = p1.detach().cpu().numpy()
@@ -83,16 +78,6 @@ class HardExampleBank:
                      strategy: str = "priority") -> Tuple[torch.Tensor, torch.Tensor]:
         """
         从难例银行中采样一批点对
-        
-        Args:
-            batch_size: 批次大小
-            strategy: 采样策略
-                - "uniform": 均匀采样
-                - "priority": 按损失优先级采样
-                - "mixed": 混合策略
-                
-        Returns:
-            p1, p2: 采样的点对
         """
         if not self.examples:
             return None, None
@@ -158,10 +143,9 @@ class HardExampleBank:
             p1_list.append(p1_np)
             p2_list.append(p2_np)
         
-        # 转换为tensor
-        # 关键修改：移除 .float()，使其遵循系统默认dtype (float64)，解决优化器报错
-        p1 = torch.tensor(np.stack(p1_list), device=self.device)
-        p2 = torch.tensor(np.stack(p2_list), device=self.device)
+        # 转换为tensor - 强制使用torch.float64
+        p1 = torch.tensor(np.stack(p1_list), dtype=torch.float64, device=self.device)
+        p2 = torch.tensor(np.stack(p2_list), dtype=torch.float64, device=self.device)
         
         return p1, p2
     
@@ -204,10 +188,10 @@ class HardExampleBank:
             p2_list.append(p2_np)
             loss_list.append(loss)
         
-        # 关键修改：移除 .float()，遵循 float64
-        p1 = torch.tensor(np.stack(p1_list), device=self.device)
-        p2 = torch.tensor(np.stack(p2_list), device=self.device)
-        losses = torch.tensor(loss_list, device=self.device)
+        # 强制使用torch.float64
+        p1 = torch.tensor(np.stack(p1_list), dtype=torch.float64, device=self.device)
+        p2 = torch.tensor(np.stack(p2_list), dtype=torch.float64, device=self.device)
+        losses = torch.tensor(loss_list, dtype=torch.float64, device=self.device)
         
         return p1, p2, losses
     
@@ -314,10 +298,10 @@ class GeometricHardExampleGenerator:
         生成Moser Spindle图（2D中的已知硬实例）
         """
         if self.dim != 2:
-            return torch.empty(0), []
+            return torch.empty(0, device=self.device), []
         
         # Moser spindle的7个点
-        # 关键修改：移除 dtype=torch.float32，让其自动遵循全局 float64
+        # 强制使用torch.float64
         points = torch.tensor([
             [0.0, 0.0],
             [1.0, 0.0],
@@ -326,7 +310,7 @@ class GeometricHardExampleGenerator:
             [1.5, np.sqrt(3)/2],
             [1.5, -np.sqrt(3)/2],
             [2.0, 0.0]
-        ], device=self.device)
+        ], dtype=torch.float64, device=self.device)
         
         # 距离为1的边
         edges = [
@@ -354,8 +338,8 @@ class GeometricHardExampleGenerator:
             if coord not in unique_points:
                 unique_points.append(coord)
         
-        # 关键修改：移除 dtype=torch.float32
-        points = torch.tensor(unique_points, device=self.device)
+        # 强制使用torch.float64
+        points = torch.tensor(unique_points, dtype=torch.float64, device=self.device)
         
         edges = []
         n = len(points)
@@ -415,12 +399,10 @@ class HardExampleTrainer(HadwigerNelsonTrainer):
         """
         self.model.train()
         
-        # 计算温度退火 (同 trainer.py 中的逻辑)
-        # 注意：这里我们使用 self.current_epoch 和 self.config.epochs
+        # 计算温度退火
         if hasattr(self.config, 'anneal_epochs'):
             import math
             progress = min(1.0, self.current_epoch / self.config.anneal_epochs)
-            # 更新 loss_fn 的 entropy weight
             if hasattr(self.loss_fn, 'set_entropy_weight'):
                 entropy_weight = self.config.min_entropy_weight + 0.5 * (self.config.max_entropy_weight - self.config.min_entropy_weight) * (1 - math.cos(math.pi * progress))
                 self.loss_fn.set_entropy_weight(entropy_weight)
@@ -428,7 +410,7 @@ class HardExampleTrainer(HadwigerNelsonTrainer):
         epoch_loss = 0
         loss_stats = {}
         
-        num_batches = max(1, (self.config.num_train_pairs + self.config.batch_size - 1) // self.config.batch_size)
+        num_batches = max(1, 100000 // self.config.batch_size)
         
         for batch_idx in range(num_batches):
             self.step_count += 1
@@ -444,7 +426,7 @@ class HardExampleTrainer(HadwigerNelsonTrainer):
                 num_hard = int(batch_size * self.hard_example_ratio)
                 num_random = batch_size - num_hard
                 
-                # 从难例银行采样
+                # 从难例银行采样 (银行会返回float64的tensor)
                 p1_hard, p2_hard = self.hard_example_bank.sample_batch(
                     num_hard, strategy="priority"
                 )
@@ -458,6 +440,10 @@ class HardExampleTrainer(HadwigerNelsonTrainer):
                 
                 # 合并数据
                 if p1_hard is not None:
+                    # 确保随机样本的类型与难例一致 (float64)
+                    p1_random = p1_random.to(dtype=torch.float64)
+                    p2_random = p2_random.to(dtype=torch.float64)
+                    
                     p1 = torch.cat([p1_hard, p1_random], dim=0)
                     p2 = torch.cat([p2_hard, p2_random], dim=0)
                 else:
@@ -466,7 +452,9 @@ class HardExampleTrainer(HadwigerNelsonTrainer):
                 # 只使用随机样本
                 p1, p2 = self.data_generator.get_batch()
             
-            p1, p2 = p1.to(self.device), p2.to(self.device)
+            # 确保数据是float64并移动到设备
+            p1 = p1.to(device=self.device, dtype=torch.float64)
+            p2 = p2.to(device=self.device, dtype=torch.float64)
             
             # --- 前向传播 ---
             out1 = self.model(p1)
@@ -498,14 +486,10 @@ class HardExampleTrainer(HadwigerNelsonTrainer):
             if self.config.gradient_clip > 0:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.gradient_clip)
             
-            # --- 优化步骤 (适配模拟退火优化器) ---
+            # --- 优化步骤 ---
+            # 如果使用SA，尝试传递数据，但注意HardExampleTrainer可能使用了混合数据
             if self.config.use_simulated_annealing:
-                # 尝试传递 p1, p2 给优化器 (如果是 _SAOptimizerWrapper)
-                try:
-                    self.optimizer.step(p1, p2)
-                except TypeError:
-                    # 如果不是包装器或不支持参数
-                    self.optimizer.step()
+                self.optimizer.step(p1, p2)
             else:
                 self.optimizer.step()
             
@@ -520,6 +504,12 @@ class HardExampleTrainer(HadwigerNelsonTrainer):
         avg_loss = epoch_loss / num_batches
         avg_stats = {k: v / num_batches for k, v in loss_stats.items()}
         avg_stats['total_loss'] = avg_loss
+        
+        # 兼容父类日志打印所需的键名 (Key Mismatch Fix)
+        if 'conflict' in avg_stats:
+            avg_stats['conflict_loss'] = avg_stats['conflict']
+        if 'entropy' in avg_stats:
+            avg_stats['entropy_loss'] = avg_stats['entropy']
         
         # 记录难例库状态
         bank_stats = self.hard_example_bank.analyze()
@@ -539,20 +529,25 @@ class HardExampleTrainer(HadwigerNelsonTrainer):
             p1_list = []
             p2_list = []
             
+            # points已经是float64 tensor
+            points_np = points.detach().cpu().numpy()
+            
             for i, j in edges:
-                p1_list.append(points[i].cpu().numpy())
-                p2_list.append(points[j].cpu().numpy())
+                p1_list.append(points_np[i])
+                p2_list.append(points_np[j])
             
             if p1_list:
-                # 确保使用默认dtype (float64)
-                p1 = torch.tensor(np.stack(p1_list), device=self.device)
-                p2 = torch.tensor(np.stack(p2_list), device=self.device)
+                # 使用float64
+                p1 = torch.tensor(np.stack(p1_list), dtype=torch.float64, device=self.device)
+                p2 = torch.tensor(np.stack(p2_list), dtype=torch.float64, device=self.device)
                 
                 # 计算损失（给予较高初始损失，确保被选中）
-                losses = torch.ones(len(p1_list), device=self.device) * 0.5
+                losses = torch.ones(len(p1_list), dtype=torch.float64, device=self.device) * 0.5
                 
                 self.hard_example_bank.add_batch(p1, p2, losses)
                 print(f"Added {len(p1_list)} Moser Spindle edges to hard example bank")
         
         except Exception as e:
             print(f"Failed to add geometric hard examples: {e}")
+            import traceback
+            traceback.print_exc()

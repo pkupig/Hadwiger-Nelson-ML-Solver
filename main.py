@@ -62,6 +62,7 @@ def setup_environment(args, config):
     
     # 确定设备
     if args.device == 'auto':
+        import torch
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
     else:
         device = args.device
@@ -99,6 +100,8 @@ def run_single_experiment(dim: int, k: int, config: dict, output_dir: str):
     print(f"Running experiment: {dim}D with k={k}")
     print('='*60)
     
+    import torch
+    
     # 创建数据生成器
     generator = PointPairGenerator(
         dim=dim,
@@ -108,7 +111,7 @@ def run_single_experiment(dim: int, k: int, config: dict, output_dir: str):
         seed=config['project']['seed']
     )
     
-    # 创建模型
+    # 创建模型 - 确保使用float64
     model = MLPColorMapper(
         input_dim=dim,
         num_colors=k,
@@ -120,6 +123,9 @@ def run_single_experiment(dim: int, k: int, config: dict, output_dir: str):
         fourier_features=config['model']['fourier_features']['num_features'],
         fourier_sigma=config['model']['fourier_features']['sigma']
     )
+    
+    # 将模型转换为float64
+    model = model.to(torch.float64)
     
     # 创建损失函数
     loss_weights = config['training']['loss_weights']
@@ -166,7 +172,7 @@ def run_single_experiment(dim: int, k: int, config: dict, output_dir: str):
         )
         
         # 预加载几何难例 (Moser Spindle 等)
-        # 这一步非常关键，给模型提供初始的“硬骨头”
+        # 这一步非常关键，给模型提供初始的"硬骨头"
         trainer.add_geometric_hard_examples()
         
     else:
@@ -211,8 +217,16 @@ def run_single_experiment(dim: int, k: int, config: dict, output_dir: str):
 
 def main():
     """主函数"""
+    import torch
+    import numpy as np
+    import matplotlib
+    
     args = parse_args()
+    
+    # 设置全局默认dtype为float64
     torch.set_default_dtype(torch.float64)
+    print(f"设置全局数据类型为: {torch.get_default_dtype()}")
+    
     # 加载配置
     config = load_config(args.config)
     
@@ -226,6 +240,7 @@ def main():
     print(f"Device: {config['project']['device']}")
     print(f"Output directory: {args.output_dir}")
     print(f"Seed: {config['project']['seed']}")
+    print(f"Default dtype: {torch.get_default_dtype()}")
     print("=" * 80)
     
     # 运行实验
@@ -266,6 +281,7 @@ def main():
                 num_colors=best_k,
                 hidden_dims=config['model']['hidden_layers']
             )
+            model = model.to(torch.float64)
             model.load_state_dict(checkpoint['model_state_dict'])
             model = model.to(config['project']['device'])
             
