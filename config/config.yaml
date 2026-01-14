@@ -1,5 +1,3 @@
-# Hadwiger-Nelson Problem ML Solver Configuration
-
 # Global settings
 project:
   name: "hadwiger_nelson_chromatic_number"
@@ -8,7 +6,7 @@ project:
   log_dir: "./logs"
   output_dir: "./results"
 
-# Data generation
+# Data generation 
 data:
   dimensions: [2, 3, 4]  # Dimensions to test
   batch_size: 4096
@@ -83,4 +81,5 @@ experiments:
     
   4d:
     colors_to_test: [5, 6, 7, 8, 9, 10, 11, 12]
+
     reference_chromatic: null
