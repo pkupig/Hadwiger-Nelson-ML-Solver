@@ -33,7 +33,7 @@ class ConstraintLoss(nn.Module):
         
         Args:
             out1, out2: 距离为1的点对的颜色分布 [batch_size, num_colors]
-            all_outputs: 所有点的颜色分布 [batch_size2, num_colors]，用于均匀性损失
+            all_outputs: 所有点的颜色分布 [batch_size2, num_colors]，用于均匀性损失 
             
         Returns:
             total_loss: 总损失
@@ -262,4 +262,5 @@ class GeometricLoss(nn.Module):
         
         consistency_loss = differences.mean()
         
+
         return consistency_loss
